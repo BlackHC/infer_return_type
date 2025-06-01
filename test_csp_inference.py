@@ -19,8 +19,7 @@ from csp_type_inference import (
     infer_return_type_csp,
     CSPTypeInferenceEngine,
     ConstraintType,
-    TypeConstraint,
-    _create_union_type
+    TypeConstraint
 )
 
 # TypeVars for testing
