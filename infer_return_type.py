@@ -1,5 +1,6 @@
 import inspect
 import typing
+import types
 from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar, Union, get_origin, get_args
 from dataclasses import fields, is_dataclass
 
@@ -96,12 +97,34 @@ def _extract_typevar_bindings_from_annotation(
         
         return
     
-    # Handle Optional[T] -> Union[T, None]
-    if origin is Union and len(args) == 2 and type(None) in args:
-        if arg_value is not None:
-            non_none_type = args[0] if args[1] is type(None) else args[1]
-            _extract_typevar_bindings_from_annotation(non_none_type, arg_value, bindings)
-        return
+    # Handle Union types (including Optional[T] which is Union[T, None])
+    # Also handle modern union syntax (types.UnionType from Python 3.10+)
+    union_type = getattr(types, 'UnionType', None)
+    if origin is Union or (union_type and origin is union_type):
+        # Handle Optional[T] -> Union[T, None] as a special case
+        if len(args) == 2 and type(None) in args:
+            if arg_value is not None:
+                non_none_type = args[0] if args[1] is type(None) else args[1]
+                _extract_typevar_bindings_from_annotation(non_none_type, arg_value, bindings)
+            return
+        
+        # Handle general Union types - try each alternative until one succeeds
+        for union_alternative in args:
+            try:
+                # Create a temporary bindings copy to test this alternative
+                temp_bindings = bindings.copy()
+                _extract_typevar_bindings_from_annotation(union_alternative, arg_value, temp_bindings)
+                # If we succeeded, update the real bindings and return
+                bindings.update(temp_bindings)
+                return
+            except (TypeInferenceError, AttributeError, TypeError) as e:
+                # This alternative didn't match, try the next one
+                continue
+        
+        # If no alternative matched, raise an error
+        raise TypeInferenceError(
+            f"Value {arg_value} of type {type(arg_value)} doesn't match any alternative in Union {args}"
+        )
     
     # Handle generic collections - annotation structure drives the extraction
     if origin in (list, List):
@@ -110,6 +133,9 @@ def _extract_typevar_bindings_from_annotation(
             # For each element, try to bind TypeVars using the element annotation
             for item in arg_value:
                 _extract_typevar_bindings_from_annotation(element_annotation, item, bindings)
+        else:
+            # Type mismatch: annotation expects list but value is not a list
+            raise TypeInferenceError(f"Expected list but got {type(arg_value)}")
     
     elif origin in (dict, Dict):
         if len(args) == 2 and isinstance(arg_value, dict):
@@ -118,6 +144,9 @@ def _extract_typevar_bindings_from_annotation(
             for key, value in arg_value.items():
                 _extract_typevar_bindings_from_annotation(key_annotation, key, bindings)
                 _extract_typevar_bindings_from_annotation(value_annotation, value, bindings)
+        else:
+            # Type mismatch: annotation expects dict but value is not a dict
+            raise TypeInferenceError(f"Expected dict but got {type(arg_value)}")
     
     elif origin in (tuple, Tuple):
         if isinstance(arg_value, tuple):
@@ -132,12 +161,18 @@ def _extract_typevar_bindings_from_annotation(
                 for i, item in enumerate(arg_value):
                     if i < len(args):
                         _extract_typevar_bindings_from_annotation(args[i], item, bindings)
+        else:
+            # Type mismatch: annotation expects tuple but value is not a tuple
+            raise TypeInferenceError(f"Expected tuple but got {type(arg_value)}")
     
     elif origin in (set, Set):
         if len(args) == 1 and isinstance(arg_value, set):
             element_annotation = args[0]
             for item in arg_value:
                 _extract_typevar_bindings_from_annotation(element_annotation, item, bindings)
+        else:
+            # Type mismatch: annotation expects set but value is not a set
+            raise TypeInferenceError(f"Expected set but got {type(arg_value)}")
     
     # Handle custom generic types (dataclasses, Pydantic models, etc.)
     else:
@@ -367,24 +402,39 @@ def _substitute_type_vars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any
     if not origin or not args:
         return annotation
     
+    # Handle Union types specially - they can have partially bound TypeVars
+    if origin is Union:
+        substituted_args = []
+        
+        for arg in args:
+            try:
+                substituted_arg = _substitute_type_vars(arg, bindings)
+                substituted_args.append(substituted_arg)
+            except TypeInferenceError:
+                # Skip unbound TypeVars in unions
+                continue
+        
+        # If we have at least one bound arg, return the union of bound args
+        if substituted_args:
+            if len(substituted_args) == 1:
+                return substituted_args[0]
+            # Use modern union syntax for Python 3.10+
+            try:
+                result = substituted_args[0]
+                for arg in substituted_args[1:]:
+                    result = result | arg
+                return result
+            except TypeError:
+                # Fallback for older Python versions
+                return Union[tuple(substituted_args)]
+        
+        # If no args were bound, this is an error
+        raise TypeInferenceError(f"No TypeVars bound in Union {args}")
+    
     # Recursively substitute in type arguments
     substituted_args = []
     for arg in args:
         substituted_args.append(_substitute_type_vars(arg, bindings))
-    
-    # Handle Union types (including Optional)
-    if origin is Union:
-        if len(substituted_args) == 1:
-            return substituted_args[0]
-        # Use modern union syntax for Python 3.10+
-        try:
-            result = substituted_args[0]
-            for arg in substituted_args[1:]:
-                result = result | arg
-            return result
-        except TypeError:
-            # Fallback for older Python versions
-            return Union[tuple(substituted_args)]
     
     # Handle generic types
     if origin in (list, List):
