@@ -57,7 +57,8 @@ def _get_concrete_type_for_typevar_binding(value: Any) -> type:
 def _extract_typevar_bindings_from_annotation(
     param_annotation: Any, 
     arg_value: Any, 
-    bindings: Dict[TypeVar, type]
+    bindings: Dict[TypeVar, type],
+    type_overrides: Optional[Dict[TypeVar, type]] = None
 ) -> None:
     """
     Extract TypeVar bindings by walking the annotation structure and binding 
@@ -67,9 +68,17 @@ def _extract_typevar_bindings_from_annotation(
     and only use the value to provide concrete type information for TypeVar binding.
     """
     
+    if type_overrides is None:
+        type_overrides = {}
+    
     # Base case: Direct TypeVar
     if isinstance(param_annotation, TypeVar):
-        concrete_type = _get_concrete_type_for_typevar_binding(arg_value)
+        # Check if we have a type override for this TypeVar
+        if param_annotation in type_overrides:
+            concrete_type = type_overrides[param_annotation]
+        else:
+            concrete_type = _get_concrete_type_for_typevar_binding(arg_value)
+        
         if param_annotation in bindings:
             # Check for conflicts
             if bindings[param_annotation] != concrete_type:
@@ -105,7 +114,7 @@ def _extract_typevar_bindings_from_annotation(
         if len(args) == 2 and type(None) in args:
             if arg_value is not None:
                 non_none_type = args[0] if args[1] is type(None) else args[1]
-                _extract_typevar_bindings_from_annotation(non_none_type, arg_value, bindings)
+                _extract_typevar_bindings_from_annotation(non_none_type, arg_value, bindings, type_overrides)
             return
         
         # Handle general Union types - try each alternative until one succeeds
@@ -113,7 +122,7 @@ def _extract_typevar_bindings_from_annotation(
             try:
                 # Create a temporary bindings copy to test this alternative
                 temp_bindings = bindings.copy()
-                _extract_typevar_bindings_from_annotation(union_alternative, arg_value, temp_bindings)
+                _extract_typevar_bindings_from_annotation(union_alternative, arg_value, temp_bindings, type_overrides)
                 # If we succeeded, update the real bindings and return
                 bindings.update(temp_bindings)
                 return
@@ -130,46 +139,241 @@ def _extract_typevar_bindings_from_annotation(
     if origin in (list, List):
         if len(args) == 1 and isinstance(arg_value, list):
             element_annotation = args[0]
-            # For each element, try to bind TypeVars using the element annotation
-            for item in arg_value:
-                _extract_typevar_bindings_from_annotation(element_annotation, item, bindings)
+            
+            # If the element annotation is a direct TypeVar, collect all element types
+            if isinstance(element_annotation, TypeVar):
+                if not arg_value:  # Empty list
+                    # Check if we have a type override for this TypeVar
+                    if element_annotation in type_overrides:
+                        concrete_type = type_overrides[element_annotation]
+                        # Bind the TypeVar
+                        if element_annotation in bindings:
+                            if bindings[element_annotation] != concrete_type:
+                                raise TypeInferenceError(
+                                    f"Conflicting types for {element_annotation}: "
+                                    f"{bindings[element_annotation]} vs {concrete_type}"
+                                )
+                        else:
+                            bindings[element_annotation] = concrete_type
+                    # If no type override, skip binding - let other parameters potentially bind this TypeVar
+                    return
+                else:
+                    # Collect all unique element types
+                    element_types = {type(item) for item in arg_value}
+                    
+                    # Bind TypeVar to single type or union of types
+                    if len(element_types) == 1:
+                        concrete_type = list(element_types)[0]
+                    else:
+                        # Create union type for mixed types
+                        try:
+                            # Use modern union syntax for Python 3.10+
+                            concrete_type = element_types.pop()
+                            for elem_type in element_types:
+                                concrete_type = concrete_type | elem_type
+                        except TypeError:
+                            # Fallback for older Python versions
+                            concrete_type = Union[tuple(element_types)]
+                
+                # Bind the TypeVar
+                if element_annotation in bindings:
+                    if bindings[element_annotation] != concrete_type:
+                        raise TypeInferenceError(
+                            f"Conflicting types for {element_annotation}: "
+                            f"{bindings[element_annotation]} vs {concrete_type}"
+                        )
+                else:
+                    bindings[element_annotation] = concrete_type
+            else:
+                # For non-TypeVar element annotations, process each element
+                for item in arg_value:
+                    _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
         else:
             # Type mismatch: annotation expects list but value is not a list
             raise TypeInferenceError(f"Expected list but got {type(arg_value)}")
-    
+
     elif origin in (dict, Dict):
         if len(args) == 2 and isinstance(arg_value, dict):
             key_annotation, value_annotation = args
-            # Bind TypeVars from keys and values
-            for key, value in arg_value.items():
-                _extract_typevar_bindings_from_annotation(key_annotation, key, bindings)
-                _extract_typevar_bindings_from_annotation(value_annotation, value, bindings)
+            
+            # Handle TypeVar annotations for keys and values separately
+            if isinstance(key_annotation, TypeVar):
+                if not arg_value:  # Empty dict
+                    # Check if we have a type override for this TypeVar
+                    if key_annotation in type_overrides:
+                        key_concrete_type = type_overrides[key_annotation]
+                        if key_annotation in bindings:
+                            if bindings[key_annotation] != key_concrete_type:
+                                raise TypeInferenceError(
+                                    f"Conflicting types for {key_annotation}: "
+                                    f"{bindings[key_annotation]} vs {key_concrete_type}"
+                                )
+                        else:
+                            bindings[key_annotation] = key_concrete_type
+                    # If no type override, skip binding - let other parameters potentially bind this TypeVar
+                else:
+                    key_types = {type(k) for k in arg_value.keys()}
+                    if len(key_types) == 1:
+                        key_concrete_type = list(key_types)[0]
+                    else:
+                        try:
+                            key_concrete_type = key_types.pop()
+                            for key_type in key_types:
+                                key_concrete_type = key_concrete_type | key_type
+                        except TypeError:
+                            key_concrete_type = Union[tuple(key_types)]
+                    
+                    if key_annotation in bindings:
+                        if bindings[key_annotation] != key_concrete_type:
+                            raise TypeInferenceError(
+                                f"Conflicting types for {key_annotation}: "
+                                f"{bindings[key_annotation]} vs {key_concrete_type}"
+                            )
+                    else:
+                        bindings[key_annotation] = key_concrete_type
+            else:
+                # Process keys with non-TypeVar annotation
+                for key in arg_value.keys():
+                    _extract_typevar_bindings_from_annotation(key_annotation, key, bindings, type_overrides)
+            
+            if isinstance(value_annotation, TypeVar):
+                if not arg_value:  # Empty dict (already checked above but being explicit)
+                    # Check if we have a type override for this TypeVar
+                    if value_annotation in type_overrides:
+                        value_concrete_type = type_overrides[value_annotation]
+                        if value_annotation in bindings:
+                            if bindings[value_annotation] != value_concrete_type:
+                                raise TypeInferenceError(
+                                    f"Conflicting types for {value_annotation}: "
+                                    f"{bindings[value_annotation]} vs {value_concrete_type}"
+                                )
+                        else:
+                            bindings[value_annotation] = value_concrete_type
+                    # If no type override, skip binding - let other parameters potentially bind this TypeVar
+                else:
+                    value_types = {type(v) for v in arg_value.values()}
+                    if len(value_types) == 1:
+                        value_concrete_type = list(value_types)[0]
+                    else:
+                        try:
+                            value_concrete_type = value_types.pop()
+                            for val_type in value_types:
+                                value_concrete_type = value_concrete_type | val_type
+                        except TypeError:
+                            value_concrete_type = Union[tuple(value_types)]
+                    
+                    if value_annotation in bindings:
+                        if bindings[value_annotation] != value_concrete_type:
+                            raise TypeInferenceError(
+                                f"Conflicting types for {value_annotation}: "
+                                f"{bindings[value_annotation]} vs {value_concrete_type}"
+                            )
+                    else:
+                        bindings[value_annotation] = value_concrete_type
+            else:
+                # Process values with non-TypeVar annotation
+                for value in arg_value.values():
+                    _extract_typevar_bindings_from_annotation(value_annotation, value, bindings, type_overrides)
         else:
             # Type mismatch: annotation expects dict but value is not a dict
             raise TypeInferenceError(f"Expected dict but got {type(arg_value)}")
-    
+
     elif origin in (tuple, Tuple):
         if isinstance(arg_value, tuple):
             # Handle tuple[T, ...] vs tuple[T1, T2, T3]
             if len(args) == 2 and args[1] is ...:
                 # Variable length tuple: tuple[T, ...]
                 element_annotation = args[0]
-                for item in arg_value:
-                    _extract_typevar_bindings_from_annotation(element_annotation, item, bindings)
+                
+                if isinstance(element_annotation, TypeVar):
+                    if not arg_value:  # Empty tuple
+                        # Check if we have a type override for this TypeVar
+                        if element_annotation in type_overrides:
+                            concrete_type = type_overrides[element_annotation]
+                            if element_annotation in bindings:
+                                if bindings[element_annotation] != concrete_type:
+                                    raise TypeInferenceError(
+                                        f"Conflicting types for {element_annotation}: "
+                                        f"{bindings[element_annotation]} vs {concrete_type}"
+                                    )
+                            else:
+                                bindings[element_annotation] = concrete_type
+                        # If no type override, skip binding - let other parameters potentially bind this TypeVar
+                        return
+                    else:
+                        element_types = {type(item) for item in arg_value}
+                        if len(element_types) == 1:
+                            concrete_type = list(element_types)[0]
+                        else:
+                            try:
+                                concrete_type = element_types.pop()
+                                for elem_type in element_types:
+                                    concrete_type = concrete_type | elem_type
+                            except TypeError:
+                                concrete_type = Union[tuple(element_types)]
+                        
+                        if element_annotation in bindings:
+                            if bindings[element_annotation] != concrete_type:
+                                raise TypeInferenceError(
+                                    f"Conflicting types for {element_annotation}: "
+                                    f"{bindings[element_annotation]} vs {concrete_type}"
+                                )
+                        else:
+                            bindings[element_annotation] = concrete_type
+                else:
+                    for item in arg_value:
+                        _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
             else:
                 # Fixed length tuple: tuple[T1, T2, T3]
                 for i, item in enumerate(arg_value):
                     if i < len(args):
-                        _extract_typevar_bindings_from_annotation(args[i], item, bindings)
+                        _extract_typevar_bindings_from_annotation(args[i], item, bindings, type_overrides)
         else:
             # Type mismatch: annotation expects tuple but value is not a tuple
             raise TypeInferenceError(f"Expected tuple but got {type(arg_value)}")
-    
+
     elif origin in (set, Set):
         if len(args) == 1 and isinstance(arg_value, set):
             element_annotation = args[0]
-            for item in arg_value:
-                _extract_typevar_bindings_from_annotation(element_annotation, item, bindings)
+            
+            if isinstance(element_annotation, TypeVar):
+                if not arg_value:  # Empty set
+                    # Check if we have a type override for this TypeVar
+                    if element_annotation in type_overrides:
+                        concrete_type = type_overrides[element_annotation]
+                        if element_annotation in bindings:
+                            if bindings[element_annotation] != concrete_type:
+                                raise TypeInferenceError(
+                                    f"Conflicting types for {element_annotation}: "
+                                    f"{bindings[element_annotation]} vs {concrete_type}"
+                                )
+                        else:
+                            bindings[element_annotation] = concrete_type
+                    # If no type override, skip binding - let other parameters potentially bind this TypeVar
+                    return
+                else:
+                    element_types = {type(item) for item in arg_value}
+                    if len(element_types) == 1:
+                        concrete_type = list(element_types)[0]
+                    else:
+                        try:
+                            concrete_type = element_types.pop()
+                            for elem_type in element_types:
+                                concrete_type = concrete_type | elem_type
+                        except TypeError:
+                            concrete_type = Union[tuple(element_types)]
+                
+                if element_annotation in bindings:
+                    if bindings[element_annotation] != concrete_type:
+                        raise TypeInferenceError(
+                            f"Conflicting types for {element_annotation}: "
+                            f"{bindings[element_annotation]} vs {concrete_type}"
+                        )
+                else:
+                    bindings[element_annotation] = concrete_type
+            else:
+                for item in arg_value:
+                    _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
         else:
             # Type mismatch: annotation expects set but value is not a set
             raise TypeInferenceError(f"Expected set but got {type(arg_value)}")
@@ -488,14 +692,14 @@ def infer_return_type(
         if i < len(param_names):
             param = sig.parameters[param_names[i]]
             if param.annotation != inspect.Parameter.empty:
-                _extract_typevar_bindings_from_annotation(param.annotation, arg, bindings)
+                _extract_typevar_bindings_from_annotation(param.annotation, arg, bindings, type_overrides)
     
     # Process keyword arguments
     for name, value in kwargs.items():
         if name in sig.parameters:
             param = sig.parameters[name]
             if param.annotation != inspect.Parameter.empty:
-                _extract_typevar_bindings_from_annotation(param.annotation, value, bindings)
+                _extract_typevar_bindings_from_annotation(param.annotation, value, bindings, type_overrides)
     
     # Apply type overrides (these take precedence)
     bindings.update(type_overrides)
