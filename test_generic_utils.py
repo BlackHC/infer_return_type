@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from generic_utils import (
     GenericInfo, GenericTypeUtils, BuiltinExtractor, PydanticExtractor, DataclassExtractor,
+    UnionExtractor, create_union_if_needed,
     get_generic_info, get_instance_generic_info, get_type_parameters, get_concrete_args,
     get_instance_concrete_args, get_generic_origin, is_generic_type, extract_all_typevars
 )
@@ -295,14 +296,14 @@ class TestDataclassExtractor:
         info = extractor.extract_from_annotation(DataclassBox[int])
         assert info.origin is DataclassBox
         assert info.concrete_args == [int]
-        assert info.type_params == []  # Concrete type, no TypeVars
+        assert info.type_params == []  # Concrete type, no TypeVars in current annotation
         assert info.is_generic
         
         # With TypeVar
         info = extractor.extract_from_annotation(DataclassBox[A])
         assert info.origin is DataclassBox
         assert info.concrete_args == [A]
-        assert info.type_params == [A]
+        assert info.type_params == [A]  # TypeVar present in current annotation
         assert info.is_generic
     
     def test_dataclass_multi_param(self):
@@ -524,6 +525,176 @@ class TestComplexScenarios:
         params = get_type_parameters(dict[U, int])
         assert params == [U]
         assert params[0].__constraints__ == (int, float)
+    
+    def test_nested_typevar_extraction_builtin(self):
+        """Test that nested TypeVars are properly extracted from built-in types."""
+        
+        # Test cases that were failing before the fix
+        info = get_generic_info(list[list[A]])
+        assert info.type_params == [A], f"Expected [A], got {info.type_params}"
+        assert info.concrete_args == [list[A]]
+        
+        info = get_generic_info(dict[A, list[B]])
+        assert set(info.type_params) == {A, B}, f"Expected {{A, B}}, got {set(info.type_params)}"
+        assert info.concrete_args == [A, list[B]]
+        
+        # Triple nesting
+        info = get_generic_info(list[dict[A, set[B]]])
+        assert set(info.type_params) == {A, B}
+        assert info.concrete_args == [dict[A, set[B]]]
+    
+    def test_improved_instance_type_inference(self):
+        """Test that instance type inference properly handles nested generics."""
+        
+        # Test case that was failing before the fix: {"a": [1, 2]}
+        info = get_instance_generic_info({"a": [1, 2]})
+        assert info.origin is dict
+        assert len(info.concrete_args) == 2
+        assert info.concrete_args[0] == str
+        # Should be list[int], not just list
+        assert info.concrete_args[1] == list[int]
+        
+        # Nested list inference
+        info = get_instance_generic_info([1, [2, 3]])
+        assert info.origin is list
+        # Should create a union of int and list[int]
+        union_type = info.concrete_args[0]
+        assert _is_union_type(union_type)
+        union_args = get_args(union_type)
+        assert int in union_args
+        assert list[int] in union_args
+        
+        # Deeply nested dict
+        nested_dict = {"level1": {"level2": [1, 2, 3]}}
+        info = get_instance_generic_info(nested_dict)
+        assert info.origin is dict
+        assert info.concrete_args[0] == str  # Keys
+        # Values should be dict[str, list[int]]
+        assert info.concrete_args[1] == dict[str, list[int]]
+    
+    def test_mixed_container_instance_inference(self):
+        """Test instance inference with mixed types in containers."""
+        
+        # Mixed list with nested structures
+        mixed_data = [1, {"a": 2}, [3, 4]]
+        info = get_instance_generic_info(mixed_data)
+        assert info.origin is list
+        union_type = info.concrete_args[0]
+        assert _is_union_type(union_type)
+        union_args = get_args(union_type)
+        assert int in union_args
+        assert dict[str, int] in union_args
+        assert list[int] in union_args
+    
+    def test_dataclass_with_nested_generics(self):
+        """Test dataclass with nested generic annotations."""
+        
+        @dataclass
+        class NestedContainer(typing.Generic[A, B]):
+            data: dict[A, list[B]]
+        
+        # Test annotation extraction with concrete types
+        info = get_generic_info(NestedContainer[str, int])
+        assert info.origin is NestedContainer
+        assert info.type_params == []  # No TypeVars in current annotation (str, int are concrete)
+        assert info.concrete_args == [str, int]
+        
+        # Test annotation extraction with TypeVars
+        info = get_generic_info(NestedContainer[A, B])
+        assert info.origin is NestedContainer
+        assert set(info.type_params) == {A, B}  # TypeVars present in current annotation
+        assert info.concrete_args == [A, B]
+        
+        # Test instance extraction  
+        instance = NestedContainer[str, int](data={"key": [1, 2, 3]})
+        instance.__orig_class__ = NestedContainer[str, int]  # Simulate Python behavior
+        
+        info = get_instance_generic_info(instance)
+        assert info.origin is NestedContainer
+        assert info.concrete_args == [str, int]
+
+
+class TestUnionExtractor:
+    """Test Union type extraction."""
+    
+    def test_union_annotation(self):
+        extractor = UnionExtractor()
+        
+        # Simple Union
+        assert extractor.can_handle_annotation(Union[int, str])
+        
+        info = extractor.extract_from_annotation(Union[int, str])
+        assert info.origin is Union
+        assert info.concrete_args == [int, str]
+        assert info.type_params == []
+        assert info.is_generic
+        
+        # Union with TypeVars
+        info = extractor.extract_from_annotation(Union[A, int])
+        assert info.origin is Union
+        assert info.concrete_args == [A, int]
+        assert info.type_params == [A]
+        assert info.is_generic
+        
+        # Nested Union
+        info = extractor.extract_from_annotation(Union[list[A], dict[B, int]])
+        assert info.origin is Union
+        assert set(info.type_params) == {A, B}
+        assert info.concrete_args == [list[A], dict[B, int]]
+    
+    @pytest.mark.skipif(not hasattr(types, 'UnionType'), reason="types.UnionType not available")
+    def test_modern_union_syntax(self):
+        """Test modern union syntax (int | str)."""
+        extractor = UnionExtractor()
+        
+        # Modern union syntax
+        modern_union = int | str
+        assert extractor.can_handle_annotation(modern_union)
+        
+        info = extractor.extract_from_annotation(modern_union)
+        assert info.origin is getattr(types, 'UnionType')
+        assert set(info.concrete_args) == {int, str}
+        assert info.is_generic
+    
+    def test_union_instances(self):
+        """Union types don't have direct instances."""
+        extractor = UnionExtractor()
+        
+        # Union types can't be instantiated
+        assert not extractor.can_handle_instance("hello")
+        assert not extractor.can_handle_instance(42)
+        
+        # Should return simple type info for instances
+        info = extractor.extract_from_instance("hello")
+        assert info.origin is str
+        assert not info.is_generic
+
+
+class TestUtilityFunctions:
+    """Test utility functions."""
+    
+    def test_create_union_if_needed(self):
+        """Test union creation utility."""
+        
+        # Single type - should return the type itself
+        result = create_union_if_needed({int})
+        assert result is int
+        
+        # Multiple types - should create union
+        result = create_union_if_needed({int, str})
+        assert _is_union_type(result)
+        assert set(get_args(result)) == {int, str}
+        
+        # Empty set - should return NoneType
+        result = create_union_if_needed(set())
+        assert result is type(None)
+        
+        # Test with complex types
+        result = create_union_if_needed({list[int], dict[str, int]})
+        assert _is_union_type(result)
+        union_args = get_args(result)
+        assert list[int] in union_args
+        assert dict[str, int] in union_args
 
 
 # if __name__ == "__main__":

@@ -21,6 +21,13 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from collections import defaultdict
 
+# Import unified generic utilities
+from generic_utils import (
+    GenericTypeUtils, get_generic_info, get_instance_generic_info, 
+    get_type_parameters, get_concrete_args, get_instance_concrete_args,
+    get_generic_origin, is_generic_type, extract_all_typevars, create_union_if_needed
+)
+
 
 class UnificationError(Exception):
     """Raised when unification fails."""
@@ -37,118 +44,6 @@ class Variance(Enum):
     COVARIANT = "covariant"
     CONTRAVARIANT = "contravariant"
     INVARIANT = "invariant"
-
-
-class TypeExtractor(ABC):
-    """Abstract interface for extracting type information from different generic type systems."""
-    
-    @abstractmethod
-    def can_handle(self, annotation: Any, instance: Any) -> bool:
-        """Check if this extractor can handle the given annotation/instance pair."""
-        pass
-    
-    @abstractmethod
-    def extract_type_params(self, annotation: Any) -> List[TypeVar]:
-        """Extract TypeVar parameters from the annotation."""
-        pass
-    
-    @abstractmethod
-    def extract_concrete_types(self, instance: Any) -> List[type]:
-        """Extract concrete types from the instance."""
-        pass
-    
-    @abstractmethod
-    def get_variance(self, annotation: Any, param_index: int) -> Variance:
-        """Get variance for a specific type parameter."""
-        pass
-
-
-class PydanticExtractor(TypeExtractor):
-    """Type extractor for Pydantic generic models."""
-    
-    def can_handle(self, annotation: Any, instance: Any) -> bool:
-        return (hasattr(annotation, '__pydantic_generic_metadata__') or 
-                hasattr(instance, '__pydantic_generic_metadata__'))
-    
-    def extract_type_params(self, annotation: Any) -> List[TypeVar]:
-        if hasattr(annotation, '__pydantic_generic_metadata__'):
-            metadata = annotation.__pydantic_generic_metadata__
-            params = metadata.get('parameters', ())
-            return [p for p in params if isinstance(p, TypeVar)]
-        return []
-    
-    def extract_concrete_types(self, instance: Any) -> List[type]:
-        if hasattr(instance, '__pydantic_generic_metadata__'):
-            metadata = instance.__pydantic_generic_metadata__
-            return list(metadata.get('args', ()))
-        return []
-    
-    def get_variance(self, annotation: Any, param_index: int) -> Variance:
-        # Pydantic models are generally invariant
-        return Variance.INVARIANT
-
-
-class DataclassExtractor(TypeExtractor):
-    """Type extractor for dataclass generic types."""
-    
-    def can_handle(self, annotation: Any, instance: Any) -> bool:
-        return (is_dataclass(annotation) or 
-                (hasattr(instance, '__orig_class__') and is_dataclass(instance)))
-    
-    def extract_type_params(self, annotation: Any) -> List[TypeVar]:
-        # For dataclasses, TypeVars are preserved in annotation args
-        args = get_args(annotation)
-        return [arg for arg in args if isinstance(arg, TypeVar)]
-    
-    def extract_concrete_types(self, instance: Any) -> List[type]:
-        if hasattr(instance, '__orig_class__'):
-            return list(get_args(instance.__orig_class__))
-        return []
-    
-    def get_variance(self, annotation: Any, param_index: int) -> Variance:
-        # Dataclasses are generally invariant
-        return Variance.INVARIANT
-
-
-class BuiltinExtractor(TypeExtractor):
-    """Type extractor for built-in generic types like List, Dict, etc."""
-    
-    def can_handle(self, annotation: Any, instance: Any) -> bool:
-        origin = get_origin(annotation)
-        return origin in (list, dict, tuple, set, List, Dict, Tuple, Set)
-    
-    def extract_type_params(self, annotation: Any) -> List[TypeVar]:
-        args = get_args(annotation)
-        return [arg for arg in args if isinstance(arg, TypeVar)]
-    
-    def extract_concrete_types(self, instance: Any) -> List[type]:
-        # For built-ins, we infer from the instance content
-        if isinstance(instance, list) and instance:
-            element_types = {type(item) for item in instance}
-            return [_create_union_type(element_types)]
-        elif isinstance(instance, dict) and instance:
-            key_types = {type(k) for k in instance.keys()}
-            value_types = {type(v) for v in instance.values()}
-            return [_create_union_type(key_types), _create_union_type(value_types)]
-        elif isinstance(instance, tuple) and instance:
-            return [type(item) for item in instance]
-        elif isinstance(instance, set) and instance:
-            element_types = {type(item) for item in instance}
-            return [_create_union_type(element_types)]
-        return []
-    
-    def get_variance(self, annotation: Any, param_index: int) -> Variance:
-        origin = get_origin(annotation)
-        if origin in (list, List, set, Set):
-            return Variance.COVARIANT  # List[A] is covariant in A
-        elif origin in (dict, Dict):
-            if param_index == 0:
-                return Variance.INVARIANT  # Dict keys are invariant
-            else:
-                return Variance.COVARIANT  # Dict values are covariant
-        elif origin in (tuple, Tuple):
-            return Variance.COVARIANT  # Tuple is covariant
-        return Variance.INVARIANT
 
 
 class Constraint:
@@ -206,11 +101,8 @@ class UnificationEngine:
     """Core unification engine for type inference."""
     
     def __init__(self):
-        self.extractors = [
-            PydanticExtractor(),
-            DataclassExtractor(), 
-            BuiltinExtractor()
-        ]
+        # Use the unified generic type utils instead of custom extractors
+        self.generic_utils = GenericTypeUtils()
     
     def unify_annotation_with_value(
         self, 
@@ -250,9 +142,9 @@ class UnificationEngine:
             constraints.append(Constraint(annotation, concrete_type))
             return
         
-        # Handle Union types
-        origin = get_origin(annotation)
-        args = get_args(annotation)
+        # Handle Union types using generic_utils
+        origin = get_generic_origin(annotation)
+        args = get_concrete_args(annotation)
         
         if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
             self._handle_union_constraints(annotation, value, constraints)
@@ -281,12 +173,12 @@ class UnificationEngine:
         elif origin in (set, Set):
             self._handle_set_constraints(annotation, value, constraints)
         else:
-            # Handle custom generic types
+            # Handle custom generic types using unified interface
             self._handle_custom_generic_constraints(annotation, value, constraints)
     
     def _handle_union_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Handle Union type constraints by trying each alternative."""
-        args = get_args(annotation)
+        args = get_concrete_args(annotation)
         
         # Try each union alternative
         best_constraints = None
@@ -315,7 +207,7 @@ class UnificationEngine:
         if not isinstance(value, list):
             raise UnificationError(f"Expected list, got {type(value)}")
         
-        args = get_args(annotation)
+        args = get_concrete_args(annotation)
         if len(args) == 1:
             element_annotation = args[0]
             
@@ -323,15 +215,15 @@ class UnificationEngine:
                 # Collect types from all elements
                 if value:
                     element_types = {type(item) for item in value}
-                    union_type = _create_union_type(element_types)
+                    union_type = create_union_if_needed(element_types)
                     constraints.append(Constraint(element_annotation, union_type, Variance.COVARIANT))
                 # If empty list, don't add constraint - will be handled later
             else:
                 # Handle Union inside List specially
-                origin = get_origin(element_annotation)
+                origin = get_generic_origin(element_annotation)
                 if origin is Union:
                     # For List[Union[A, B]] with values [int, str], we need to collect constraints differently
-                    union_args = get_args(element_annotation)
+                    union_args = get_concrete_args(element_annotation)
                     for item in value:
                         # Try to match item against union alternatives
                         self._match_value_to_union_alternatives(item, union_args, constraints)
@@ -345,18 +237,18 @@ class UnificationEngine:
         if not isinstance(value, dict):
             raise UnificationError(f"Expected dict, got {type(value)}")
         
-        args = get_args(annotation)
+        args = get_concrete_args(annotation)
         if len(args) == 2:
             key_annotation, value_annotation = args
             
             if isinstance(key_annotation, TypeVar) and value:
                 key_types = {type(k) for k in value.keys()}
-                union_type = _create_union_type(key_types)
+                union_type = create_union_if_needed(key_types)
                 constraints.append(Constraint(key_annotation, union_type, Variance.INVARIANT))
             
             if isinstance(value_annotation, TypeVar) and value:
                 value_types = {type(v) for v in value.values()}
-                union_type = _create_union_type(value_types)
+                union_type = create_union_if_needed(value_types)
                 constraints.append(Constraint(value_annotation, union_type, Variance.COVARIANT))
             
             # Recursively handle non-TypeVar annotations
@@ -373,14 +265,14 @@ class UnificationEngine:
         if not isinstance(value, tuple):
             raise UnificationError(f"Expected tuple, got {type(value)}")
         
-        args = get_args(annotation)
+        args = get_concrete_args(annotation)
         
         if len(args) == 2 and args[1] is ...:
             # Variable length tuple: Tuple[T, ...]
             element_annotation = args[0]
             if isinstance(element_annotation, TypeVar) and value:
                 element_types = {type(item) for item in value}
-                union_type = _create_union_type(element_types)
+                union_type = create_union_if_needed(element_types)
                 constraints.append(Constraint(element_annotation, union_type, Variance.COVARIANT))
             elif not isinstance(element_annotation, TypeVar):
                 for item in value:
@@ -397,20 +289,20 @@ class UnificationEngine:
         if not isinstance(value, set):
             raise UnificationError(f"Expected set, got {type(value)}")
         
-        args = get_args(annotation)
+        args = get_concrete_args(annotation)
         if len(args) == 1:
             element_annotation = args[0]
             
             if isinstance(element_annotation, TypeVar):
                 if value:
                     element_types = {type(item) for item in value}
-                    union_type = _create_union_type(element_types)
+                    union_type = create_union_if_needed(element_types)
                     constraints.append(Constraint(element_annotation, union_type, Variance.COVARIANT))
             else:
                 # Check if this is a Union type
-                origin = get_origin(element_annotation)
+                origin = get_generic_origin(element_annotation)
                 if origin is Union:
-                    union_args = get_args(element_annotation)
+                    union_args = get_concrete_args(element_annotation)
                     for item in value:
                         self._match_value_to_union_alternatives(item, union_args, constraints)
                 else:
@@ -418,48 +310,52 @@ class UnificationEngine:
                         self._collect_constraints_internal(element_annotation, item, constraints)
     
     def _handle_custom_generic_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
-        """Handle custom generic types using extractors."""
+        """Handle custom generic types using unified generic_utils interface."""
         
-        for extractor in self.extractors:
-            if extractor.can_handle(annotation, value):
-                try:
-                    type_params = extractor.extract_type_params(annotation)
-                    concrete_types = extractor.extract_concrete_types(value)
-                    
-                    if len(type_params) == len(concrete_types):
-                        for i, (param, concrete) in enumerate(zip(type_params, concrete_types)):
-                            variance = extractor.get_variance(annotation, i)
-                            constraints.append(Constraint(param, concrete, variance))
-                        return
-                    
-                    # Fallback: try to extract from nested structure
-                    self._extract_from_nested_structure(annotation, value, constraints)
+        # Use generic_utils to extract information
+        ann_info = self.generic_utils.get_generic_info(annotation)
+        val_info = self.generic_utils.get_instance_generic_info(value)
+        
+        # If both annotation and value are recognized as generic
+        if ann_info.is_generic and val_info.is_generic:
+            # Check if they have compatible origins
+            if ann_info.origin == val_info.origin or (
+                hasattr(ann_info.origin, '__name__') and hasattr(val_info.origin, '__name__') and
+                ann_info.origin.__name__ == val_info.origin.__name__
+            ):
+                # Try to align type parameters with concrete arguments
+                if len(ann_info.type_params) == len(val_info.concrete_args):
+                    for param, concrete in zip(ann_info.type_params, val_info.concrete_args):
+                        # Use invariant variance as default for custom types
+                        constraints.append(Constraint(param, concrete, Variance.INVARIANT))
                     return
-                except Exception:
-                    continue
         
-        # No extractor could handle it - try fallback methods
+        # If annotation has type parameters but no concrete args from value,
+        # try to extract from nested structure
+        if ann_info.type_params:
+            self._extract_from_nested_structure(annotation, value, constraints)
+            return
+        
+        # Fallback: try to extract from nested structure
         self._extract_from_nested_structure(annotation, value, constraints)
     
     def _extract_from_nested_structure(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Fallback method to extract constraints from nested structures."""
         
         # Try to align annotation structure with value structure
-        ann_origin = get_origin(annotation)
-        ann_args = get_args(annotation)
+        ann_info = self.generic_utils.get_generic_info(annotation)
         
         # First, check if the value has explicit type information
         if hasattr(value, '__orig_class__'):
             value_type = value.__orig_class__
-            value_args = get_args(value_type)
+            val_info = self.generic_utils.get_generic_info(value_type)
             
-            if ann_args and value_args and len(ann_args) == len(value_args):
-                for ann_arg, val_arg in zip(ann_args, value_args):
-                    if isinstance(ann_arg, TypeVar):
-                        constraints.append(Constraint(ann_arg, val_arg))
-                    else:
-                        # Recursively handle nested generic structures
-                        self._extract_from_annotation_alignment(ann_arg, val_arg, constraints)
+            # Instead of trying to align type_params with concrete_args directly,
+            # recursively align the concrete_args structures
+            if ann_info.concrete_args and val_info.concrete_args and len(ann_info.concrete_args) == len(val_info.concrete_args):
+                for ann_arg, val_arg in zip(ann_info.concrete_args, val_info.concrete_args):
+                    # Recursively handle nested generic structures
+                    self._extract_from_annotation_alignment(ann_arg, val_arg, constraints)
                 return
         
         # Try to extract from instance fields for dataclasses and similar
@@ -468,32 +364,25 @@ class UnificationEngine:
     def _extract_from_annotation_alignment(self, ann_type: Any, val_type: Any, constraints: List[Constraint]):
         """Extract constraints by aligning annotation and value type structures."""
         
-        ann_origin = get_origin(ann_type)
-        ann_args = get_args(ann_type)
-        val_origin = get_origin(val_type)
-        val_args = get_args(val_type)
+        ann_info = self.generic_utils.get_generic_info(ann_type)
+        val_info = self.generic_utils.get_generic_info(val_type)
         
         # Special handling for Pydantic generic classes
         # The annotation might be just `Box` but we need to extract TypeVars from class metadata
-        if (not ann_args and hasattr(ann_type, '__pydantic_generic_metadata__') and 
-            val_args and hasattr(val_type, '__pydantic_generic_metadata__')):
-            
-            ann_metadata = ann_type.__pydantic_generic_metadata__
-            val_metadata = val_type.__pydantic_generic_metadata__
+        if (not ann_info.concrete_args and hasattr(ann_type, '__pydantic_generic_metadata__') and 
+            val_info.concrete_args and hasattr(val_type, '__pydantic_generic_metadata__')):
             
             # Get TypeVars from annotation class and concrete types from value type
-            ann_typevars = ann_metadata.get('parameters', ())
-            val_concrete_types = val_metadata.get('args', ()) or get_args(val_type)
-            
-            if ann_typevars and val_concrete_types and len(ann_typevars) == len(val_concrete_types):
-                for ann_typevar, val_concrete in zip(ann_typevars, val_concrete_types):
+            if ann_info.type_params and val_info.concrete_args and len(ann_info.type_params) == len(val_info.concrete_args):
+                for ann_typevar, val_concrete in zip(ann_info.type_params, val_info.concrete_args):
                     if isinstance(ann_typevar, TypeVar):
                         constraints.append(Constraint(ann_typevar, val_concrete))
                 return
         
         # If both have the same origin and compatible args, align them
-        if ann_origin == val_origin and ann_args and val_args and len(ann_args) == len(val_args):
-            for i, (ann_arg, val_arg) in enumerate(zip(ann_args, val_args)):
+        if (ann_info.origin == val_info.origin and ann_info.concrete_args and val_info.concrete_args and 
+            len(ann_info.concrete_args) == len(val_info.concrete_args)):
+            for i, (ann_arg, val_arg) in enumerate(zip(ann_info.concrete_args, val_info.concrete_args)):
                 if isinstance(ann_arg, TypeVar):
                     constraints.append(Constraint(ann_arg, val_arg))
                 else:
@@ -510,15 +399,11 @@ class UnificationEngine:
     
     def _extract_pydantic_constraints(self, ann_type: Any, val_type: Any, constraints: List[Constraint]):
         """Extract constraints from Pydantic generic types."""
-        ann_metadata = ann_type.__pydantic_generic_metadata__
-        val_metadata = val_type.__pydantic_generic_metadata__
+        ann_info = self.generic_utils.get_generic_info(ann_type)
+        val_info = self.generic_utils.get_generic_info(val_type)
         
-        # Get TypeVars from annotation class and concrete types from value type
-        ann_typevars = ann_metadata.get('parameters', ())
-        val_concrete_types = val_metadata.get('args', ())
-        
-        if ann_typevars and val_concrete_types and len(ann_typevars) == len(val_concrete_types):
-            for ann_typevar, val_concrete in zip(ann_typevars, val_concrete_types):
+        if ann_info.type_params and val_info.concrete_args and len(ann_info.type_params) == len(val_info.concrete_args):
+            for ann_typevar, val_concrete in zip(ann_info.type_params, val_info.concrete_args):
                 if isinstance(ann_typevar, TypeVar):
                     constraints.append(Constraint(ann_typevar, val_concrete))
     
@@ -527,8 +412,8 @@ class UnificationEngine:
         
         # Handle dataclasses
         if is_dataclass(value):
-            ann_args = get_args(annotation)
-            if ann_args:
+            ann_info = self.generic_utils.get_generic_info(annotation)
+            if ann_info.type_params:
                 # Try to infer TypeVar bindings from field values
                 field_values = []
                 for field in fields(value):
@@ -536,22 +421,22 @@ class UnificationEngine:
                     field_values.append((field.name, field_value, type(field_value)))
                 
                 # For now, simple heuristic: if there's one TypeVar and all fields have same type
-                if len(ann_args) == 1 and isinstance(ann_args[0], TypeVar):
+                if len(ann_info.type_params) == 1:
                     if field_values:
                         # Collect types from all fields and create union
                         field_types = {fv[2] for fv in field_values}
-                        union_type = _create_union_type(field_types)
-                        constraints.append(Constraint(ann_args[0], union_type))
+                        union_type = create_union_if_needed(field_types)
+                        constraints.append(Constraint(ann_info.type_params[0], union_type))
         
         # Handle other generic instances by trying to extract from __dict__
-        elif hasattr(value, '__dict__') and hasattr(annotation, '__args__'):
-            ann_args = get_args(annotation)
-            if ann_args and len(ann_args) == 1 and isinstance(ann_args[0], TypeVar):
+        elif hasattr(value, '__dict__'):
+            ann_info = self.generic_utils.get_generic_info(annotation)
+            if ann_info.type_params and len(ann_info.type_params) == 1:
                 # Extract types from instance attributes
                 attr_types = {type(v) for v in value.__dict__.values() if v is not None}
                 if attr_types:
-                    union_type = _create_union_type(attr_types)
-                    constraints.append(Constraint(ann_args[0], union_type))
+                    union_type = create_union_if_needed(attr_types)
+                    constraints.append(Constraint(ann_info.type_params[0], union_type))
     
     def _solve_constraints(self, constraints: List[Constraint]) -> Substitution:
         """Solve the constraint system to produce a substitution with global context awareness."""
@@ -662,7 +547,7 @@ class UnificationEngine:
             # Both None and non-None types present - create union including None
             non_none_types = [c.concrete_type for c in non_none_constraints]
             all_types = set(non_none_types) | {type(None)}
-            return self._check_typevar_bounds(typevar, _create_union_type(all_types))
+            return self._check_typevar_bounds(typevar, create_union_if_needed(all_types))
         
         # Key insight: distinguish between "forced unions" and "conflicting sources"
         # Forced unions: single container with mixed types (List[A] with mixed elements)
@@ -674,7 +559,7 @@ class UnificationEngine:
         
         # If we have covariant constraints (like List[A] with mixed elements), form union
         if covariant_constraints and not invariant_constraints:
-            return self._check_typevar_bounds(typevar, _create_union_type(set(concrete_types)))
+            return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
         
         # If we have multiple invariant constraints (like multiple Dict[A,B] or List[A]), this is a conflict
         if len(invariant_constraints) > 1:
@@ -684,7 +569,7 @@ class UnificationEngine:
                 raise UnificationError(f"Conflicting type assignments for {typevar}: {invariant_constraints}")
         
         # Mixed variance - default to union formation
-        return self._check_typevar_bounds(typevar, _create_union_type(set(concrete_types)))
+        return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
     
     def _check_typevar_bounds(self, typevar: TypeVar, concrete_type: type) -> type:
         """Check if concrete type satisfies TypeVar bounds and constraints."""
@@ -693,9 +578,9 @@ class UnificationEngine:
         if typevar.__constraints__:
             if concrete_type not in typevar.__constraints__:
                 # For Union types, check if all components are in constraints
-                origin = get_origin(concrete_type)
+                origin = get_generic_origin(concrete_type)
                 if origin is Union:
-                    union_args = get_args(concrete_type)
+                    union_args = get_concrete_args(concrete_type)
                     if not all(arg in typevar.__constraints__ for arg in union_args):
                         raise UnificationError(
                             f"Type {concrete_type} violates constraints {typevar.__constraints__} for {typevar}"
@@ -779,22 +664,6 @@ class UnificationEngine:
                     constraints.append(Constraint(alt, value_type, Variance.INVARIANT))
 
 
-def _create_union_type(types_set: Set[type]) -> type:
-    """Create a Union type from a set of types."""
-    if len(types_set) == 1:
-        return list(types_set)[0]
-    else:
-        try:
-            # Use modern union syntax for Python 3.10+
-            result = types_set.pop()
-            for elem_type in types_set:
-                result = result | elem_type
-            return result
-        except TypeError:
-            # Fallback for older Python versions
-            return Union[tuple(types_set)]
-
-
 def _find_common_supertype(types_list: List[type]) -> type:
     """Find the most specific common supertype of a list of types."""
     if not types_list:
@@ -805,7 +674,7 @@ def _find_common_supertype(types_list: List[type]) -> type:
     
     # Simplified implementation - in practice would need more sophisticated MRO analysis
     # For now, just return Union
-    return _create_union_type(set(types_list))
+    return create_union_if_needed(set(types_list))
 
 
 def _is_subtype(subtype: type, supertype: type) -> bool:
@@ -831,13 +700,13 @@ def _infer_type_from_value(value: Any) -> type:
             element_type = list(element_types)[0]
             return list[element_type]
         else:
-            return list[_create_union_type(element_types)]
+            return list[create_union_if_needed(element_types)]
     elif isinstance(value, dict) and value:
         key_types = {type(k) for k in value.keys()}
         value_types = {type(v) for v in value.values()}
         
-        key_type = list(key_types)[0] if len(key_types) == 1 else _create_union_type(key_types)
-        value_type = list(value_types)[0] if len(value_types) == 1 else _create_union_type(value_types)
+        key_type = list(key_types)[0] if len(key_types) == 1 else create_union_if_needed(key_types)
+        value_type = list(value_types)[0] if len(value_types) == 1 else create_union_if_needed(value_types)
         
         return dict[key_type, value_type]
     elif isinstance(value, tuple):
@@ -849,7 +718,7 @@ def _infer_type_from_value(value: Any) -> type:
             element_type = list(element_types)[0]
             return set[element_type]
         else:
-            return set[_create_union_type(element_types)]
+            return set[create_union_if_needed(element_types)]
     
     return base_type
 
@@ -864,8 +733,8 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
             # Instead of failing, return the TypeVar as-is - this will be caught later
             return annotation
     
-    origin = get_origin(annotation)
-    args = get_args(annotation)
+    origin = get_generic_origin(annotation)
+    args = get_concrete_args(annotation)
     
     if not origin or not args:
         return annotation
@@ -885,7 +754,7 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
             if len(substituted_args) == 1:
                 return substituted_args[0]
             # Use helper function to create Union type
-            return _create_union_type(set(substituted_args))
+            return create_union_if_needed(set(substituted_args))
         
         # If no args were bound, return the original annotation (will be caught as unbound)
         return annotation
@@ -907,7 +776,7 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
     elif origin is Union:
         if len(substituted_args) == 1:
             return substituted_args[0]
-        return _create_union_type(set(substituted_args))
+        return create_union_if_needed(set(substituted_args))
     else:
         # For other generic types, try to reconstruct
         try:
@@ -988,8 +857,9 @@ def _has_unbound_typevars(annotation: Any) -> bool:
     if isinstance(annotation, TypeVar):
         return True
     
-    origin = get_origin(annotation)
-    args = get_args(annotation)
+    # Use generic_utils for consistent handling
+    origin = get_generic_origin(annotation)
+    args = get_concrete_args(annotation)
     
     if args:
         return any(_has_unbound_typevars(arg) for arg in args)

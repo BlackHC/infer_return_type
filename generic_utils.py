@@ -4,6 +4,16 @@ Unified utilities for extracting type information from generic annotations and i
 This module provides a consistent interface for working with generic types across
 different systems (built-in generics, Pydantic models, dataclasses) without
 needing special case handling in the main type inference code.
+
+Key concepts:
+- type_params: TypeVars that are present in the current annotation being analyzed
+- concrete_args: The actual type arguments passed to the generic type
+- origin: The base generic type (e.g., list for list[int])
+
+For example:
+- list[A] -> type_params=[A], concrete_args=[A], origin=list
+- list[int] -> type_params=[], concrete_args=[int], origin=list
+- DataclassBox[str] -> type_params=[], concrete_args=[str], origin=DataclassBox
 """
 
 import typing
@@ -14,7 +24,20 @@ from abc import ABC, abstractmethod
 
 
 class GenericInfo:
-    """Container for generic type information extracted from annotations or instances."""
+    """
+    Container for generic type information extracted from annotations or instances.
+    
+    Attributes:
+        origin: The base generic type (e.g., list for list[int], DataclassBox for DataclassBox[str])
+        type_params: TypeVars that are present in the current annotation (not the original class definition)
+        concrete_args: The actual type arguments passed to the generic type
+        is_generic: Whether this type has generic information (type_params or concrete_args)
+    
+    Examples:
+        For list[A]: origin=list, type_params=[A], concrete_args=[A], is_generic=True
+        For list[int]: origin=list, type_params=[], concrete_args=[int], is_generic=True
+        For str: origin=str, type_params=[], concrete_args=[], is_generic=False
+    """
     
     def __init__(
         self, 
@@ -76,8 +99,16 @@ class BuiltinExtractor(GenericExtractor):
         origin = get_origin(annotation)
         args = get_args(annotation)
         
-        # For built-ins, all args are concrete (no separate TypeVar parameter list)
-        type_params = [arg for arg in args if isinstance(arg, TypeVar)]
+        # For built-ins, we need to extract TypeVars from nested structures
+        type_params = []
+        for arg in args:
+            if isinstance(arg, TypeVar):
+                type_params.append(arg)
+            else:
+                # Recursively extract TypeVars from nested structures
+                nested_params = extract_all_typevars(arg)
+                type_params.extend(nested_params)
+        
         concrete_args = list(args)
         
         return GenericInfo(
@@ -104,18 +135,26 @@ class BuiltinExtractor(GenericExtractor):
     def _infer_args_from_content(self, instance: Any) -> List[Any]:
         """Infer type arguments from instance content."""
         if isinstance(instance, list) and instance:
-            element_types = {type(item) for item in instance}
+            element_types = {self._infer_type_from_value(item) for item in instance}
             return [create_union_if_needed(element_types)]
         elif isinstance(instance, dict) and instance:
-            key_types = {type(k) for k in instance.keys()}
-            value_types = {type(v) for v in instance.values()}
+            key_types = {self._infer_type_from_value(k) for k in instance.keys()}
+            value_types = {self._infer_type_from_value(v) for v in instance.values()}
             return [create_union_if_needed(key_types), create_union_if_needed(value_types)]
         elif isinstance(instance, tuple) and instance:
-            return [type(item) for item in instance]
+            return [self._infer_type_from_value(item) for item in instance]
         elif isinstance(instance, set) and instance:
-            element_types = {type(item) for item in instance}
+            element_types = {self._infer_type_from_value(item) for item in instance}
             return [create_union_if_needed(element_types)]
         return []
+    
+    def _infer_type_from_value(self, value: Any) -> type:
+        """Infer the most specific type from a value, including nested generic types."""
+        info = get_instance_generic_info(value)
+        if info.is_generic:
+            return info.origin[*info.concrete_args]
+        else:
+            return info.origin
 
 
 class PydanticExtractor(GenericExtractor):
@@ -329,6 +368,13 @@ class GenericTypeUtils:
         """
         Extract TypeVar parameters from any generic annotation.
         
+        This returns TypeVars that are present in the current annotation,
+        not the original class definition. For example:
+        - list[A] -> [A]
+        - list[int] -> []
+        - DataclassBox[A, B] -> [A, B]
+        - DataclassBox[str, int] -> []
+        
         This replaces custom TypeVar extraction logic.
         """
         info = self.get_generic_info(annotation)
@@ -338,6 +384,12 @@ class GenericTypeUtils:
         """
         Extract concrete type arguments from any generic annotation.
         
+        This returns the actual type arguments passed to the generic type:
+        - list[int] -> [int]
+        - dict[str, A] -> [str, A]  
+        - DataclassBox[str] -> [str]
+        - list (unparameterized) -> []
+        
         This replaces custom argument extraction logic.
         """
         info = self.get_generic_info(annotation)
@@ -346,6 +398,11 @@ class GenericTypeUtils:
     def get_instance_concrete_args(self, instance: Any) -> List[Any]:
         """
         Extract concrete type arguments from any generic instance.
+        
+        This handles the different ways generic instances store type info:
+        - Built-in containers: infer from content ([1, 2] -> [int])
+        - Pydantic models: extract from __pydantic_generic_metadata__
+        - Dataclasses: extract from __orig_class__ if available
         
         This handles the different ways generic instances store type info.
         """
