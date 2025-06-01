@@ -654,18 +654,15 @@ class UnificationEngine:
         # Different constraints - analyze variance and context
         variances = [c.variance for c in constraints]
         
-        # Special handling for Optional scenarios
+        # Handle None values: Instead of ignoring None, include it in the union when appropriate
         none_types = [c for c in constraints if c.concrete_type == type(None)]
         non_none_constraints = [c for c in constraints if c.concrete_type != type(None)]
         
         if none_types and non_none_constraints:
-            # This is an Optional-like scenario - ignore None constraints for primary type inference
+            # Both None and non-None types present - create union including None
             non_none_types = [c.concrete_type for c in non_none_constraints]
-            if len(set(non_none_types)) == 1:
-                return self._check_typevar_bounds(typevar, non_none_types[0])
-            else:
-                # Multiple non-None types - create union
-                return self._check_typevar_bounds(typevar, _create_union_type(set(non_none_types)))
+            all_types = set(non_none_types) | {type(None)}
+            return self._check_typevar_bounds(typevar, _create_union_type(all_types))
         
         # Key insight: distinguish between "forced unions" and "conflicting sources"
         # Forced unions: single container with mixed types (List[A] with mixed elements)
@@ -720,6 +717,13 @@ class UnificationEngine:
     def _match_value_to_union_alternatives(self, value: Any, union_alternatives: Tuple, constraints: List[Constraint]):
         """Match a value against union alternatives and collect constraints."""
         value_type = type(value)
+        
+        # First, check if the value exactly matches any concrete (non-TypeVar) type in the union
+        # This handles cases like Optional[A] where None should match the concrete None type
+        for alt in union_alternatives:
+            if not isinstance(alt, TypeVar) and alt == value_type:
+                # Perfect match with concrete type - no constraints needed
+                return
         
         # Check if we already have strong hints about what each TypeVar should be
         # by looking at existing constraints

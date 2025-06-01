@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple, TypeVar, Union, Callable
 
 import pytest
-from infer_return_type import TypeInferenceError, infer_return_type
+# from infer_return_type import TypeInferenceError, infer_return_type
+from unification_type_inference import TypeInferenceError, infer_return_type_unified as infer_return_type
 from pydantic import BaseModel
 
 # TypeVars for testing
@@ -197,12 +198,17 @@ def test_multi_typevar_error_scenarios():
     assert typing.get_origin(t) is tuple
     assert typing.get_args(t) == (int, str, int)
     
-    # Same TypeVar with conflicting types (should fail)
+    # Same TypeVar with conflicting types - improved engine creates union instead of failing
     def same_typevar_conflict(a: List[A], b: List[A]) -> A: ...
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(same_typevar_conflict, [1, 2], ["a", "b"])
+    t = infer_return_type(same_typevar_conflict, [1, 2], ["a", "b"])
+    # Should return int | str union type
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
     
-    # Partial binding with empty containers (should fail)
+    # Partial binding with empty containers (should still fail due to unbound TypeVars)
     def partial_multi_binding(a: List[A], b: Dict[B, C], c: Set[A]) -> Tuple[A, B, C]: ...
     with pytest.raises(TypeInferenceError):
         infer_return_type(partial_multi_binding, [], {}, {42})
@@ -818,12 +824,15 @@ def test_homogeneous_containers_vs_mixed_containers():
     import types
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     
-    # But nested mixed containers with same TypeVar fail due to conflicts
+    # Nested mixed containers with same TypeVar - improved engine now handles this
     def process_nested_mixed(data: List[List[A]]) -> A: ...
     
-    # TODO: This limitation - mixed types across different inner containers
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(process_nested_mixed, [[1, 2], ["a", "b"]])
+    # The improved engine creates union from mixed nested types instead of failing
+    t = infer_return_type(process_nested_mixed, [[1, 2], ["a", "b"]])
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
 
 
 def test_typevar_in_key_and_value_positions():
@@ -863,7 +872,7 @@ def test_typevar_with_none_values():
     """
     Test TypeVar inference when containers include None values.
     
-    TODO: This tests how None values affect TypeVar binding.
+    Tests how None values affect TypeVar binding - should properly include None in unions.
     """
     
     def process_optional_elements(data: List[A]) -> A: ...
@@ -880,12 +889,17 @@ def test_typevar_with_none_values():
     assert int in union_args
     assert type(None) in union_args
     
-    # But nested containers with None might have limitations
+    # Nested containers with None should also include None in the union
     def process_nested_with_none(data: List[List[A]]) -> A: ...
     
-    # TODO: This limitation - None values in nested containers
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(process_nested_with_none, [[1, 2], [None, None]])
+    # Should correctly infer A = int | None from nested structure
+    t = infer_return_type(process_nested_with_none, [[1, 2], [None, None]])
+    # Should be int | None union
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert int in union_args
+    assert type(None) in union_args
 
 
 def test_empty_vs_non_empty_container_combinations():
@@ -901,10 +915,13 @@ def test_empty_vs_non_empty_container_combinations():
     t = infer_return_type(process_multiple_lists, [], [1, 2], [])
     assert t is int
     
-    # But if non-empty ones conflict, it should fail
-    # TODO: Remove this when limitation is fixed
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(process_multiple_lists, [], [1, 2], ["a", "b"])
+    # If non-empty ones conflict, the improved engine now creates unions
+    t = infer_return_type(process_multiple_lists, [], [1, 2], ["a", "b"])
+    origin = typing.get_origin(t)
+    import types
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
 
 
 def test_deeply_nested_with_different_branching():
@@ -922,9 +939,14 @@ def test_deeply_nested_with_different_branching():
         {"branch2": ["a", "b", "c"]}   # A = str (should conflict)
     ]
     
-    # TODO: Remove this when limitation is fixed
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(process_complex_nested, complex_data)
+    # The improved engine now handles complex nested branching with unions
+    t = infer_return_type(process_complex_nested, complex_data)
+    # Creates union from different branch types
+    origin = typing.get_origin(t)
+    import types
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
 
 
 def test_typevar_inference_with_subtyping():
