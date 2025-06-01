@@ -523,3 +523,272 @@ def test_nested_dict_extraction():
     nested_dict = {"key": {1: "value1", 2: "value2"}}
     t = infer_return_type(extract_nested_values, nested_dict)
     assert typing.get_origin(t) is list and typing.get_args(t) == (str,)
+
+
+# =============================================================================
+# EDGE CASE TESTS BASED ON _extract_typevar_bindings_from_annotation ANALYSIS
+# =============================================================================
+
+def test_union_type_limitations():
+    """Test Union type handling - should work but currently fails"""
+    
+    # General Union types should be supported
+    def process_union(data: Union[List[A], Set[A]]) -> A: ...
+    
+    # This should work - clearly a list, should bind A=int
+    t = infer_return_type(process_union, [1, 2, 3])
+    assert t is int
+    
+    # This should also work - clearly a set, should bind A=str
+    t = infer_return_type(process_union, {"hello", "world"})
+    assert t is str
+    
+    # Modern union syntax should also work
+    def process_modern_union(data: List[A] | Set[A]) -> A: ...
+    
+    t = infer_return_type(process_modern_union, [1, 2, 3])
+    assert t is int
+
+
+def test_mixed_type_container_behavior():
+    """Test that mixed-type containers should infer union types"""
+    
+    def process_mixed_list(items: List[A]) -> A: ...
+    
+    # Mixed type list should infer union type A = int | str | float
+    mixed_list = [1, "hello", 3.14]  # int, str, float
+    t = infer_return_type(process_mixed_list, mixed_list)
+    
+    # Should be int | str | float (union type)
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str, float}
+    
+    def process_mixed_dict_values(data: Dict[str, A]) -> A: ...
+    
+    # Mixed value types should infer A = int | str
+    mixed_dict = {"a": 1, "b": "hello"}  # int, str values
+    t = infer_return_type(process_mixed_dict_values, mixed_dict)
+    
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
+
+
+def test_empty_container_inference_limitations():
+    """Test limitations with empty containers - these should fail as expected"""
+    
+    def process_empty_list(items: List[A]) -> A: ...
+    def process_empty_dict(data: Dict[A, B]) -> Tuple[A, B]: ...
+    def process_empty_set(items: Set[A]) -> A: ...
+    
+    # Empty containers cannot provide type information - these should fail
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_empty_list, [])
+    
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_empty_dict, {})
+    
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_empty_set, set())
+
+
+def test_type_mismatch_graceful_handling():
+    """Test that type mismatches are handled gracefully - should fail as expected"""
+    
+    def process_list(items: List[A]) -> A: ...
+    
+    # Annotation expects List[A] but value is not a list - should fail gracefully
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_list, "not_a_list")
+    
+    def process_dict(data: Dict[A, B]) -> Tuple[A, B]: ...
+    
+    # Annotation expects Dict[A, B] but value is not a dict - should fail gracefully
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_dict, [1, 2, 3])
+
+
+def test_variable_vs_fixed_length_tuples():
+    """Test difference between variable and fixed length tuple handling"""
+    
+    def process_var_tuple(data: Tuple[A, ...]) -> A: ...
+    def process_fixed_tuple(data: Tuple[A, B, C]) -> Tuple[A, B, C]: ...
+    
+    # Variable length tuple - all elements should have same type
+    var_tuple = (1, 2, 3, 4, 5)
+    t = infer_return_type(process_var_tuple, var_tuple)
+    assert t is int
+    
+    # Fixed length tuple - each position can have different type
+    fixed_tuple = (1, "hello", 3.14)
+    t = infer_return_type(process_fixed_tuple, fixed_tuple)
+    assert typing.get_origin(t) is tuple
+    assert typing.get_args(t) == (int, str, float)
+    
+    # Fixed tuple with wrong length should still work for available positions
+    def process_three_tuple(data: Tuple[A, B, C]) -> A: ...
+    
+    # Tuple has only 2 elements but annotation expects 3 - should still bind A
+    t = infer_return_type(process_three_tuple, (1, "hello"))
+    assert t is int
+
+
+def test_deeply_nested_structure_limits():
+    """Test deeply nested structures work correctly"""
+    
+    def process_deep_nested(data: List[List[List[List[A]]]]) -> A: ...
+    
+    # Very deep nesting should work
+    deep_data = [[[["bottom"]]]]
+    t = infer_return_type(process_deep_nested, deep_data)
+    assert t is str
+    
+    # Even deeper with mixed containers
+    def process_very_deep(data: List[Dict[str, Set[Tuple[A, B]]]]) -> Tuple[A, B]: ...
+    
+    very_deep_data = [{"key": {(1, "a"), (2, "b")}}]
+    t = infer_return_type(process_very_deep, very_deep_data)
+    assert typing.get_origin(t) is tuple
+    assert typing.get_args(t) == (int, str)
+
+
+def test_complex_union_container_scenarios():
+    """Test complex union scenarios should work"""
+    
+    # Union of different container types should work
+    def process_list_or_dict(data: Union[List[A], Dict[str, A]]) -> A: ...
+    
+    # Should recognize this as List[int] and bind A=int
+    t = infer_return_type(process_list_or_dict, [1, 2, 3])
+    assert t is int
+    
+    # Should recognize this as Dict[str, int] and bind A=int  
+    t = infer_return_type(process_list_or_dict, {"key": 42})
+    assert t is int
+    
+    # Union of generic containers with different type params
+    def process_container_union(data: Union[List[A], Set[B]]) -> Union[A, B]: ...
+    
+    # Should bind A=int and return A (since it's a list)
+    t = infer_return_type(process_container_union, [1, 2, 3])
+    assert t is int
+
+
+def test_optional_nested_in_containers():
+    """Test Optional types nested within containers"""
+    
+    def process_optional_list(data: List[Optional[A]]) -> A: ...
+    
+    # List with mix of values and None - should bind A from non-None values
+    optional_list = [1, None, 2, None, 3]
+    t = infer_return_type(process_optional_list, optional_list)
+    assert t is int
+    
+    def process_list_of_optionals(data: Optional[List[A]]) -> A: ...
+    
+    # Optional list (not None) should work
+    t = infer_return_type(process_list_of_optionals, [1, 2, 3])
+    assert t is int
+    
+    # None case should fail appropriately
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_list_of_optionals, None)
+
+
+def test_callable_type_variable_inference_limits():
+    """Test callable type variable inference should work"""
+    
+    # Callable types with TypeVars should be inferrable from function signatures
+    def apply_func(items: List[A], func: Callable[[A], B]) -> List[B]: ...
+    
+    def int_to_str(x: int) -> str:
+        return str(x)
+    
+    # Should infer A=int from list, B=str from callable signature
+    t = infer_return_type(apply_func, [1, 2, 3], int_to_str)
+    assert typing.get_origin(t) is list
+    assert typing.get_args(t) == (str,)
+
+
+def test_generic_class_without_type_parameters():
+    """Test behavior with generic classes that don't specify type parameters"""
+    
+    @dataclass
+    class GenericContainer(typing.Generic[A]):
+        value: A
+    
+    def process_generic(container: GenericContainer[A]) -> A: ...
+    
+    # Creating instance without explicit type parameter should still work
+    container = GenericContainer(value=42)  # No [int] specified
+    
+    # Should infer from the instance data
+    t = infer_return_type(process_generic, container)
+    assert t is int
+
+
+def test_inheritance_chain_type_binding():
+    """Test TypeVar binding through inheritance chains"""
+    
+    @dataclass
+    class BaseGeneric(typing.Generic[A]):
+        base_value: A
+    
+    @dataclass
+    class DerivedGeneric(BaseGeneric[str]):  # Concrete specialization
+        derived_value: int
+    
+    def process_derived(obj: DerivedGeneric) -> str: ...
+    
+    derived = DerivedGeneric(base_value="hello", derived_value=42)
+    t = infer_return_type(process_derived, derived)
+    assert t is str
+    
+    # More complex inheritance with TypeVars
+    @dataclass  
+    class MultiLevel(DerivedGeneric, typing.Generic[B]):
+        extra: B
+    
+    def process_multi(obj: MultiLevel[B]) -> B: ...
+    
+    multi = MultiLevel[float](base_value="hello", derived_value=42, extra=3.14)
+    t = infer_return_type(process_multi, multi)
+    assert t is float
+
+
+def test_multiple_union_containers():
+    """Test functions with multiple union container parameters"""
+    
+    def process_multiple_unions(
+        data1: Union[List[A], Tuple[A, ...]], 
+        data2: Union[Set[B], Dict[str, B]]
+    ) -> Tuple[A, B]: ...
+    
+    # Should handle multiple union parameters
+    t = infer_return_type(process_multiple_unions, [1, 2], {"a": "hello", "b": "world"})
+    assert typing.get_origin(t) is tuple
+    assert typing.get_args(t) == (int, str)
+
+
+def test_nested_unions_in_generics():
+    """Test nested union types within generic containers"""
+    
+    def process_nested_union(data: List[Union[A, B]]) -> Union[A, B]: ...
+    
+    # List containing mixed types should infer union
+    mixed_list = [1, "hello", 2, "world"]  # int and str mixed
+    t = infer_return_type(process_nested_union, mixed_list)
+    
+    # Should return Union[int, str] or int | str
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
