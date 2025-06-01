@@ -44,6 +44,27 @@ class ConstraintType(Enum):
     EXCLUSION = "exclusion"        # A ≠ type (negative constraint)
 
 
+class Variance(Enum):
+    """Type variance for generic parameters."""
+    COVARIANT = "covariant"         # A ≤ SuperType (List[T] is covariant in T)
+    CONTRAVARIANT = "contravariant" # A ≥ SubType (Callable[[T], R] is contravariant in T) 
+    INVARIANT = "invariant"         # A = ExactType (Dict[K, V] is invariant in K)
+
+
+# Variance rules for common generic types
+VARIANCE_MAP = {
+    list: [Variance.COVARIANT],                    # List[T] - covariant in T
+    List: [Variance.COVARIANT],
+    dict: [Variance.INVARIANT, Variance.COVARIANT], # Dict[K, V] - invariant in K, covariant in V
+    Dict: [Variance.INVARIANT, Variance.COVARIANT],
+    tuple: [Variance.COVARIANT],                   # Tuple[T, ...] - covariant in T
+    Tuple: [Variance.COVARIANT],                   # Note: fixed tuples are more complex
+    set: [Variance.COVARIANT],                     # Set[T] - covariant in T
+    Set: [Variance.COVARIANT],
+    # typing.Callable: [Variance.CONTRAVARIANT, Variance.COVARIANT], # Callable[[T], R] - contravariant in T, covariant in R
+}
+
+
 @dataclass
 class TypeConstraint:
     """A single constraint in our CSP model."""
@@ -53,11 +74,12 @@ class TypeConstraint:
     description: str        # Human-readable description
     priority: int = 1       # Higher priority constraints are satisfied first
     source: str = ""        # Where this constraint came from (for debugging)
+    variance: Variance = Variance.INVARIANT  # Variance context for this constraint
     
     def __str__(self):
         vars_str = ", ".join(str(v) for v in self.variables)
         types_str = ", ".join(str(t) for t in self.types)
-        return f"{self.constraint_type.value}: vars={{{vars_str}}} types={{{types_str}}} - {self.description}"
+        return f"{self.constraint_type.value}: vars={{{vars_str}}} types={{{types_str}}} - {self.description} ({self.variance.value})"
 
 
 @dataclass  
@@ -201,7 +223,7 @@ class CSPTypeInferenceEngine:
             if var not in self.domains:
                 self.domains[var] = TypeDomain(var)
                 
-    def add_equality_constraint(self, typevar: TypeVar, concrete_type: type, source: str = ""):
+    def add_equality_constraint(self, typevar: TypeVar, concrete_type: type, variance: Variance = Variance.INVARIANT, source: str = ""):
         """Add A = type constraint."""
         constraint = TypeConstraint(
             constraint_type=ConstraintType.EQUALITY,
@@ -209,11 +231,12 @@ class CSPTypeInferenceEngine:
             types={concrete_type},
             description=f"{typevar} = {concrete_type}",
             priority=10,  # High priority - exact constraints
-            source=source
+            source=source,
+            variance=variance
         )
         self.add_constraint(constraint)
         
-    def add_subset_constraint(self, typevars: Set[TypeVar], concrete_types: Set[type], source: str = ""):
+    def add_subset_constraint(self, typevars: Set[TypeVar], concrete_types: Set[type], variance: Variance = Variance.COVARIANT, source: str = ""):
         """Add {TypeVars} ⊇ {concrete_types} constraint (union constraint)."""
         constraint = TypeConstraint(
             constraint_type=ConstraintType.SUBSET,
@@ -221,7 +244,8 @@ class CSPTypeInferenceEngine:
             types=concrete_types,
             description=f"{{{', '.join(str(v) for v in typevars)}}} ⊇ {{{', '.join(str(t) for t in concrete_types)}}}",
             priority=5,
-            source=source
+            source=source,
+            variance=variance
         )
         self.add_constraint(constraint)
         
@@ -233,7 +257,21 @@ class CSPTypeInferenceEngine:
             types={supertype},
             description=f"{typevar} ≤ {supertype}",
             priority=7,
-            source=source
+            source=source,
+            variance=Variance.COVARIANT
+        )
+        self.add_constraint(constraint)
+        
+    def add_supertype_constraint(self, typevar: TypeVar, subtype: type, source: str = ""):
+        """Add A ≥ SubType constraint (contravariant)."""
+        constraint = TypeConstraint(
+            constraint_type=ConstraintType.SUPERTYPE,
+            variables={typevar},
+            types={subtype},
+            description=f"{typevar} ≥ {subtype}",
+            priority=7,
+            source=source,
+            variance=Variance.CONTRAVARIANT
         )
         self.add_constraint(constraint)
         
@@ -259,7 +297,7 @@ class CSPTypeInferenceEngine:
         # Base case: Direct TypeVar
         if isinstance(annotation, TypeVar):
             concrete_type = _infer_type_from_value(value)
-            self.add_equality_constraint(annotation, concrete_type, f"{source}:direct")
+            self.add_equality_constraint(annotation, concrete_type, Variance.INVARIANT, f"{source}:direct")
             self.add_bounds_constraint(annotation, f"{source}:bounds")
             return
             
@@ -280,18 +318,12 @@ class CSPTypeInferenceEngine:
             # If value is None, we can't infer much but don't fail
             return
             
-        # Handle generic containers
-        if origin in (list, List):
-            self._handle_list_annotation(annotation, value, source)
-        elif origin in (dict, Dict):
-            self._handle_dict_annotation(annotation, value, source)
-        elif origin in (tuple, Tuple):
-            self._handle_tuple_annotation(annotation, value, source)
-        elif origin in (set, Set):
-            self._handle_set_annotation(annotation, value, source)
+        # Handle all generic containers using unified approach
+        if origin and args:
+            self._handle_generic_container(annotation, value, source)
         else:
-            # Handle other generic types using unified interface
-            self._handle_custom_generic_annotation(annotation, value, source)
+            # Handle non-generic types
+            self._handle_non_generic_annotation(annotation, value, source)
             
     def _handle_union_annotation(self, annotation: Any, value: Any, source: str):
         """Handle Union[A, B, ...] annotations."""
@@ -342,7 +374,7 @@ class CSPTypeInferenceEngine:
             if isinstance(best_match, TypeVar):
                 # Direct TypeVar binding
                 concrete_type = _infer_type_from_value(value)
-                self.add_equality_constraint(best_match, concrete_type, f"{source}:union_direct")
+                self.add_equality_constraint(best_match, concrete_type, Variance.INVARIANT, f"{source}:union_direct")
                 self.add_bounds_constraint(best_match, f"{source}:union_bounds")
             else:
                 # Process the matching alternative
@@ -350,101 +382,69 @@ class CSPTypeInferenceEngine:
         else:
             # Fallback: if we have TypeVars and no good match, create subset constraint
             if typevars:
-                self.add_subset_constraint(typevars, {value_type}, f"{source}:union_fallback")
+                self.add_subset_constraint(typevars, {value_type}, Variance.COVARIANT, f"{source}:union_fallback")
             
-    def _handle_list_annotation(self, annotation: Any, value: Any, source: str):
-        """Handle List[T] annotations.""" 
-        if not isinstance(value, list):
-            raise CSPTypeInferenceError(f"Expected list, got {type(value)} in {source}")
-            
-        args = get_concrete_args(annotation)
-        if len(args) == 1:
-            element_annotation = args[0]
-            
-            if isinstance(element_annotation, TypeVar):
-                # Covariant constraint: TypeVar can be union of all element types
-                if value:
-                    element_types = {type(item) for item in value}
-                    if len(element_types) == 1:
-                        # Homogeneous list - equality constraint
-                        self.add_equality_constraint(element_annotation, next(iter(element_types)), f"{source}:list_homogeneous")
-                    else:
-                        # Mixed list - subset constraint (union formation)
-                        self.add_subset_constraint({element_annotation}, element_types, f"{source}:list_mixed")
-                    self.add_bounds_constraint(element_annotation, f"{source}:list_bounds")
+    def _handle_generic_container(self, annotation: Any, value: Any, source: str):
+        """Unified handler for all generic container types using generic_utils and variance rules."""
+        
+        # Get generic information
+        ann_info = self.generic_utils.get_generic_info(annotation)
+        
+        if not ann_info.is_generic:
+            # Not actually generic, handle as non-generic
+            self._handle_non_generic_annotation(annotation, value, source)
+            return
+        
+        # Special handling for tuples
+        if ann_info.origin in (tuple, Tuple):
+            self._handle_tuple_annotation(annotation, value, source)
+            return
+        
+        # Get variance rules for this container type
+        variance_rules = VARIANCE_MAP.get(ann_info.origin, [Variance.INVARIANT] * len(ann_info.concrete_args))
+        
+        # Ensure we have enough variance rules
+        while len(variance_rules) < len(ann_info.concrete_args):
+            variance_rules.append(Variance.INVARIANT)
+        
+        # Validate value type
+        if not self._validate_container_type(ann_info.origin, value):
+            raise CSPTypeInferenceError(f"Expected {ann_info.origin}, got {type(value)} in {source}")
+        
+        # Use generic_utils to extract concrete types from the instance
+        inferred_concrete_args = self.generic_utils.get_instance_concrete_args(value)
+        
+        # Create constraints for each type parameter
+        for i, (type_arg, variance) in enumerate(zip(ann_info.concrete_args, variance_rules)):
+            if isinstance(type_arg, TypeVar):
+                # Handle TypeVar with appropriate variance
+                if i < len(inferred_concrete_args):
+                    inferred_type = inferred_concrete_args[i]
+                    self._add_constraint_for_typevar_with_type(type_arg, inferred_type, variance, f"{source}:{ann_info.origin.__name__}[{i}]")
             else:
-                # Nested generic - recurse into each element
-                for i, item in enumerate(value):
-                    self._collect_constraints_recursive(element_annotation, item, f"{source}:list[{i}]")
-                    
-    def _handle_dict_annotation(self, annotation: Any, value: Any, source: str):
-        """Handle Dict[K, V] annotations."""
-        if not isinstance(value, dict):
-            raise CSPTypeInferenceError(f"Expected dict, got {type(value)} in {source}")
-            
-        args = get_concrete_args(annotation)
-        if len(args) == 2:
-            key_annotation, value_annotation = args
-            
-            if isinstance(key_annotation, TypeVar) and value:
-                key_types = {type(k) for k in value.keys()}
-                if len(key_types) == 1:
-                    self.add_equality_constraint(key_annotation, next(iter(key_types)), f"{source}:dict_keys")
-                else:
-                    self.add_subset_constraint({key_annotation}, key_types, f"{source}:dict_keys_mixed")
-                self.add_bounds_constraint(key_annotation, f"{source}:dict_key_bounds")
-                
-            if isinstance(value_annotation, TypeVar) and value:
-                value_types = {type(v) for v in value.values()}
-                if len(value_types) == 1:
-                    self.add_equality_constraint(value_annotation, next(iter(value_types)), f"{source}:dict_values")
-                else:
-                    self.add_subset_constraint({value_annotation}, value_types, f"{source}:dict_values_mixed")
-                self.add_bounds_constraint(value_annotation, f"{source}:dict_value_bounds")
-                
-            # Handle non-TypeVar annotations recursively
-            if not isinstance(key_annotation, TypeVar):
-                for key in value.keys():
-                    self._collect_constraints_recursive(key_annotation, key, f"{source}:dict_key")
-                    
-            if not isinstance(value_annotation, TypeVar):
-                for val in value.values():
-                    self._collect_constraints_recursive(value_annotation, val, f"{source}:dict_value")
-                    
-    def _handle_set_annotation(self, annotation: Any, value: Any, source: str):
-        """Handle Set[T] annotations."""
-        if not isinstance(value, set):
-            raise CSPTypeInferenceError(f"Expected set, got {type(value)} in {source}")
-            
-        args = get_concrete_args(annotation)
-        if len(args) == 1:
-            element_annotation = args[0]
-            
-            if isinstance(element_annotation, TypeVar):
-                if value:
-                    element_types = {type(item) for item in value}
-                    if len(element_types) == 1:
-                        self.add_equality_constraint(element_annotation, next(iter(element_types)), f"{source}:set_homogeneous")
-                    else:
-                        self.add_subset_constraint({element_annotation}, element_types, f"{source}:set_mixed")
-                    self.add_bounds_constraint(element_annotation, f"{source}:set_bounds")
-            else:
-                # Handle Union inside Set specially
-                origin = get_generic_origin(element_annotation)
-                if origin is Union:
-                    union_args = get_concrete_args(element_annotation)
-                    typevars_in_union = {arg for arg in union_args if isinstance(arg, TypeVar)}
-                    if typevars_in_union:
-                        # Set[Union[A, B]] with {int, str} means {A, B} ⊇ {int, str}
-                        element_types = {type(item) for item in value}
-                        self.add_subset_constraint(typevars_in_union, element_types, f"{source}:set_union")
-                else:
-                    # Recurse into each element
-                    for i, item in enumerate(value):
-                        self._collect_constraints_recursive(element_annotation, item, f"{source}:set[{i}]")
-                        
+                # Recursively handle nested generic structures
+                # For non-TypeVar annotations, we would need to dive deeper, but this is rare
+                pass
+    
+    def _add_constraint_for_typevar_with_type(self, typevar: TypeVar, inferred_type: type, variance: Variance, source: str):
+        """Add constraints for a TypeVar based on an already-inferred type and variance."""
+        
+        # Apply variance rules
+        if variance == Variance.INVARIANT:
+            # Invariant: must be exact match
+            self.add_equality_constraint(typevar, inferred_type, variance, source)
+        elif variance == Variance.COVARIANT:
+            # Covariant: TypeVar can be the inferred type or a union containing it
+            self.add_equality_constraint(typevar, inferred_type, variance, source)
+        elif variance == Variance.CONTRAVARIANT:
+            # Contravariant: TypeVar must be supertype of inferred type
+            self.add_supertype_constraint(typevar, inferred_type, source)
+        
+        # Always add bounds check
+        self.add_bounds_constraint(typevar, f"{source}:bounds")
+    
     def _handle_tuple_annotation(self, annotation: Any, value: Any, source: str):
-        """Handle Tuple annotations."""
+        """Handle Tuple annotations with proper distinction between fixed and variable length."""
         if not isinstance(value, tuple):
             raise CSPTypeInferenceError(f"Expected tuple, got {type(value)} in {source}")
             
@@ -453,141 +453,60 @@ class CSPTypeInferenceEngine:
         if len(args) == 2 and args[1] is ...:
             # Variable length tuple: Tuple[T, ...]
             element_annotation = args[0]
-            if isinstance(element_annotation, TypeVar) and value:
-                element_types = {type(item) for item in value}
-                if len(element_types) == 1:
-                    self.add_equality_constraint(element_annotation, next(iter(element_types)), f"{source}:var_tuple")
-                else:
-                    self.add_subset_constraint({element_annotation}, element_types, f"{source}:var_tuple_mixed")
-                self.add_bounds_constraint(element_annotation, f"{source}:var_tuple_bounds")
+            if isinstance(element_annotation, TypeVar):
+                if value:
+                    element_types = {type(item) for item in value}
+                    if len(element_types) == 1:
+                        self.add_equality_constraint(element_annotation, next(iter(element_types)), Variance.COVARIANT, f"{source}:var_tuple")
+                    else:
+                        self.add_subset_constraint({element_annotation}, element_types, Variance.COVARIANT, f"{source}:var_tuple_mixed")
+                    self.add_bounds_constraint(element_annotation, f"{source}:var_tuple_bounds")
+            else:
+                # Recursively handle each element with the same annotation
+                for i, item in enumerate(value):
+                    self._collect_constraints_recursive(element_annotation, item, f"{source}:var_tuple[{i}]")
         else:
-            # Fixed length tuple
+            # Fixed length tuple: Tuple[X, Y, Z, ...]
             for i, item in enumerate(value):
                 if i < len(args):
-                    self._collect_constraints_recursive(args[i], item, f"{source}:tuple[{i}]")
-                    
-    def _handle_custom_generic_annotation(self, annotation: Any, value: Any, source: str):
-        """Handle custom generic annotations using unified generic_utils interface."""
-        
-        # Use generic_utils to extract information consistently
-        ann_info = self.generic_utils.get_generic_info(annotation)
-        val_info = self.generic_utils.get_instance_generic_info(value)
-        
-        # If both annotation and value are recognized as generic
-        if ann_info.is_generic and val_info.is_generic:
-            # Check if they have compatible origins
-            if ann_info.origin == val_info.origin or (
-                hasattr(ann_info.origin, '__name__') and hasattr(val_info.origin, '__name__') and
-                ann_info.origin.__name__ == val_info.origin.__name__
-            ):
-                # Try to align type parameters with concrete arguments
-                if len(ann_info.type_params) == len(val_info.concrete_args):
-                    for param, concrete in zip(ann_info.type_params, val_info.concrete_args):
-                        # Use equality constraint for custom types as default
-                        self.add_equality_constraint(param, concrete, f"{source}:custom_generic")
-                        self.add_bounds_constraint(param, f"{source}:custom_bounds")
-                    return
-        
-        # If annotation has type parameters but no concrete args from value,
-        # try to extract from nested structure
-        if ann_info.type_params:
-            self._extract_from_nested_structure(annotation, value, source)
-            return
-        
-        # Fallback: try to extract from nested structure
-        self._extract_from_nested_structure(annotation, value, source)
-    
-    def _extract_from_nested_structure(self, annotation: Any, value: Any, source: str):
-        """Fallback method to extract constraints from nested structures."""
-        
-        # Try to align annotation structure with value structure
-        ann_info = self.generic_utils.get_generic_info(annotation)
-        
-        # First, check if the value has explicit type information
-        if hasattr(value, '__orig_class__'):
-            value_type = value.__orig_class__
-            val_info = self.generic_utils.get_generic_info(value_type)
-            
-            # Recursively align the concrete_args structures
-            if ann_info.concrete_args and val_info.concrete_args and len(ann_info.concrete_args) == len(val_info.concrete_args):
-                for ann_arg, val_arg in zip(ann_info.concrete_args, val_info.concrete_args):
-                    # Recursively handle nested generic structures
-                    self._extract_from_annotation_alignment(ann_arg, val_arg, source)
-                return
-        
-        # Try to extract from instance fields for dataclasses and similar
-        self._extract_from_instance_fields(annotation, value, source)
-    
-    def _extract_from_annotation_alignment(self, ann_type: Any, val_type: Any, source: str):
-        """Extract constraints by aligning annotation and value type structures."""
-        
-        ann_info = self.generic_utils.get_generic_info(ann_type)
-        val_info = self.generic_utils.get_generic_info(val_type)
-        
-        # Special handling for Pydantic and other generic classes
-        if (not ann_info.concrete_args and ann_info.type_params and 
-            val_info.concrete_args and len(ann_info.type_params) == len(val_info.concrete_args)):
-            
-            # Get TypeVars from annotation and concrete types from value type
-            for ann_typevar, val_concrete in zip(ann_info.type_params, val_info.concrete_args):
-                if isinstance(ann_typevar, TypeVar):
-                    self.add_equality_constraint(ann_typevar, val_concrete, f"{source}:alignment")
-                    self.add_bounds_constraint(ann_typevar, f"{source}:alignment_bounds")
-            return
-        
-        # If both have the same origin and compatible args, align them
-        if (ann_info.origin == val_info.origin and ann_info.concrete_args and val_info.concrete_args and 
-            len(ann_info.concrete_args) == len(val_info.concrete_args)):
-            for i, (ann_arg, val_arg) in enumerate(zip(ann_info.concrete_args, val_info.concrete_args)):
-                if isinstance(ann_arg, TypeVar):
-                    self.add_equality_constraint(ann_arg, val_arg, f"{source}:alignment_arg_{i}")
-                    self.add_bounds_constraint(ann_arg, f"{source}:alignment_arg_{i}_bounds")
-                else:
-                    # Recursively handle deeper nesting
-                    self._extract_from_annotation_alignment(ann_arg, val_arg, f"{source}:nested_{i}")
-        elif isinstance(ann_type, TypeVar):
-            # Direct TypeVar binding
-            self.add_equality_constraint(ann_type, val_type, f"{source}:direct_alignment")
-            self.add_bounds_constraint(ann_type, f"{source}:direct_alignment_bounds")
-    
-    def _extract_from_instance_fields(self, annotation: Any, value: Any, source: str):
-        """Extract type constraints from instance field values."""
-        
-        # Use generic_utils for consistent field extraction
-        ann_info = self.generic_utils.get_generic_info(annotation)
-        
-        # Handle dataclasses
-        from dataclasses import is_dataclass, fields
-        if is_dataclass(value):
-            if ann_info.type_params:
-                # Try to infer TypeVar bindings from field values
-                field_values = []
-                for field in fields(value):
-                    field_value = getattr(value, field.name)
-                    field_values.append((field.name, field_value, type(field_value)))
-                
-                # For now, simple heuristic: if there's one TypeVar and all fields have same type
-                if len(ann_info.type_params) == 1:
-                    if field_values:
-                        # Collect types from all fields and create union
-                        field_types = {fv[2] for fv in field_values}
-                        if len(field_types) == 1:
-                            self.add_equality_constraint(ann_info.type_params[0], next(iter(field_types)), f"{source}:dataclass_field")
-                        else:
-                            self.add_subset_constraint({ann_info.type_params[0]}, field_types, f"{source}:dataclass_fields_mixed")
-                        self.add_bounds_constraint(ann_info.type_params[0], f"{source}:dataclass_bounds")
-        
-        # Handle other generic instances by trying to extract from __dict__
-        elif hasattr(value, '__dict__'):
-            if ann_info.type_params and len(ann_info.type_params) == 1:
-                # Extract types from instance attributes
-                attr_types = {type(v) for v in value.__dict__.values() if v is not None}
-                if attr_types:
-                    if len(attr_types) == 1:
-                        self.add_equality_constraint(ann_info.type_params[0], next(iter(attr_types)), f"{source}:instance_attr")
+                    # Each position has its own type parameter
+                    type_arg = args[i]
+                    if isinstance(type_arg, TypeVar):
+                        concrete_type = _infer_type_from_value(item)
+                        self.add_equality_constraint(type_arg, concrete_type, Variance.INVARIANT, f"{source}:fixed_tuple[{i}]")
+                        self.add_bounds_constraint(type_arg, f"{source}:fixed_tuple[{i}]_bounds")
                     else:
-                        self.add_subset_constraint({ann_info.type_params[0]}, attr_types, f"{source}:instance_attrs_mixed")
-                    self.add_bounds_constraint(ann_info.type_params[0], f"{source}:instance_bounds")
+                        # Recursively handle nested types
+                        self._collect_constraints_recursive(type_arg, item, f"{source}:fixed_tuple[{i}]")
+    
+    def _validate_container_type(self, origin: type, value: Any) -> bool:
+        """Validate that value is of the expected container type."""
+        if origin in (list, List):
+            return isinstance(value, list)
+        elif origin in (dict, Dict):
+            return isinstance(value, dict)
+        elif origin in (tuple, Tuple):
+            return isinstance(value, tuple)
+        elif origin in (set, Set):
+            return isinstance(value, set)
+        else:
+            # For custom types, check if value is instance of origin
+            try:
+                return isinstance(value, origin)
+            except TypeError:
+                # origin might not be a type we can check against
+                return True
+    
+    def _handle_non_generic_annotation(self, annotation: Any, value: Any, source: str):
+        """Handle non-generic type annotations."""
+        # For non-generic types, just validate that the value matches
+        expected_type = annotation
+        actual_type = type(value)
+        
+        if not _is_subtype(actual_type, expected_type):
+            # This is not necessarily an error - might be a supertype relationship
+            # For now, just skip (could add warnings later)
+            pass
     
     def solve(self) -> CSPSolution:
         """Solve the CSP to find type bindings."""
@@ -633,7 +552,14 @@ class CSPTypeInferenceEngine:
             # A = type
             typevar = next(iter(constraint.variables))
             concrete_type = next(iter(constraint.types))
-            self.domains[typevar].set_exact_type(concrete_type)
+            
+            # Apply variance rules when setting exact type
+            if constraint.variance == Variance.COVARIANT and len(constraint.types) > 1:
+                # Covariant with multiple types - create union
+                union_type = create_union_if_needed(constraint.types)
+                self.domains[typevar].set_exact_type(union_type)
+            else:
+                self.domains[typevar].set_exact_type(concrete_type)
             
         elif constraint.constraint_type == ConstraintType.SUBSET:
             # {TypeVars} ⊇ {concrete_types} - distribute types among TypeVars
@@ -641,7 +567,10 @@ class CSPTypeInferenceEngine:
                 # Single TypeVar must be union of all types
                 typevar = next(iter(constraint.variables))
                 if len(constraint.types) == 1:
-                    self.domains[typevar].set_exact_type(next(iter(constraint.types)))
+                    if constraint.variance == Variance.COVARIANT:
+                        self.domains[typevar].set_exact_type(next(iter(constraint.types)))
+                    else:
+                        self.domains[typevar].set_exact_type(next(iter(constraint.types)))
                 else:
                     union_type = create_union_if_needed(constraint.types)
                     self.domains[typevar].set_exact_type(union_type)
@@ -653,10 +582,16 @@ class CSPTypeInferenceEngine:
                         self.domains[typevar].add_possible_type(t)
                         
         elif constraint.constraint_type == ConstraintType.SUBTYPE:
-            # A ≤ SuperType
+            # A ≤ SuperType (covariant)
             typevar = next(iter(constraint.variables))
             supertype = next(iter(constraint.types))
             self.domains[typevar].add_subtype_constraint(supertype)
+            
+        elif constraint.constraint_type == ConstraintType.SUPERTYPE:
+            # A ≥ SubType (contravariant)
+            typevar = next(iter(constraint.variables))
+            subtype = next(iter(constraint.types))
+            self.domains[typevar].add_supertype_constraint(subtype)
             
         elif constraint.constraint_type == ConstraintType.BOUNDS_CHECK:
             # Check TypeVar bounds and constraints
@@ -739,7 +674,7 @@ def infer_return_type_csp(
                 
     # Add type overrides as high-priority equality constraints
     for typevar, override_type in type_overrides.items():
-        engine.add_equality_constraint(typevar, override_type, "override")
+        engine.add_equality_constraint(typevar, override_type, Variance.INVARIANT, "override")
         
     # Solve the CSP
     try:
