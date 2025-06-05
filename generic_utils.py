@@ -21,7 +21,7 @@ import functools
 import typing
 import types
 from typing import Any, List, Dict, Tuple, Set, TypeVar, get_origin, get_args, Union, Iterable
-from dataclasses import is_dataclass, dataclass, field
+from dataclasses import is_dataclass, dataclass, field, fields
 from abc import ABC, abstractmethod
 
 
@@ -254,9 +254,19 @@ class PydanticExtractor(GenericExtractor):
             # This is the unparameterized base class (e.g., PydanticBox)
             origin = annotation
             concrete_args = []  # No concrete args for unparameterized annotations
+            
+            # For unparameterized generic classes, extract TypeVars from class definition
+            # to ensure they're included in type_params
+            original_type_params = self._get_original_type_parameters(annotation)
+            if original_type_params:
+                # Create GenericInfo for each TypeVar to include in concrete_args
+                # so they're picked up by type_params computation
+                for type_param in original_type_params:
+                    concrete_args.append(GenericInfo(origin=type_param, is_generic=False))
 
+        is_generic = bool(concrete_args)
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
+            origin=origin, concrete_args=concrete_args, is_generic=is_generic
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
@@ -281,10 +291,139 @@ class PydanticExtractor(GenericExtractor):
             # This is the unparameterized base class (e.g., PydanticBox)
             origin = instance_class
             concrete_args = []  # No concrete args for unparameterized instances
+            
+            # Try to infer from field values when metadata is not available
+            inferred_args = self._infer_from_field_values(instance)
+            if inferred_args:
+                concrete_args = inferred_args
 
         return GenericInfo(
             origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
         )
+
+    def _infer_from_field_values(self, instance: Any) -> List[GenericInfo]:
+        """Infer concrete type arguments from actual field values in a Pydantic instance."""
+        try:
+            # Get the original type parameters from the class definition
+            original_type_params = self._get_original_type_parameters(type(instance))
+            if not original_type_params:
+                return []
+            
+            # Get field annotations from the model
+            field_annotations = self._get_field_annotations(type(instance))
+            if not field_annotations:
+                return []
+            
+            # Get actual field values
+            field_values = {}
+            for field_name in field_annotations.keys():
+                if hasattr(instance, field_name):
+                    field_values[field_name] = getattr(instance, field_name)
+            
+            # Map type parameters to inferred types
+            return self._map_typevars_to_inferred_types(
+                original_type_params, field_annotations, field_values
+            )
+            
+        except Exception:
+            # If anything goes wrong, return empty list
+            return []
+
+    def _get_original_type_parameters(self, pydantic_class: Any) -> List[TypeVar]:
+        """Get the original TypeVar parameters from a Pydantic class definition."""
+        for base in getattr(pydantic_class, "__orig_bases__", []):
+            if hasattr(base, "__origin__") and hasattr(base, "__args__"):
+                # Look for Generic[A, B, ...] in the bases
+                origin = get_origin(base)
+                if origin and hasattr(origin, "__name__") and "Generic" in str(origin):
+                    args = get_args(base)
+                    return [arg for arg in args if isinstance(arg, TypeVar)]
+        return []
+
+    def _get_field_annotations(self, pydantic_class: Any) -> Dict[str, Any]:
+        """Get field annotations from a Pydantic model."""
+        # Try to get annotations from the class
+        return getattr(pydantic_class, "__annotations__", {})
+
+    def _map_typevars_to_inferred_types(
+        self, type_params: List[TypeVar], field_annotations: Dict[str, Any], field_values: Dict[str, Any]
+    ) -> List[GenericInfo]:
+        """Map TypeVars to inferred types based on field values."""
+        # Create a mapping from TypeVar to inferred types
+        typevar_to_types: Dict[TypeVar, Set[Any]] = {tv: set() for tv in type_params}
+        
+        # Analyze each field
+        for field_name, field_annotation in field_annotations.items():
+            if field_name in field_values:
+                field_value = field_values[field_name]
+                self._extract_typevar_bindings(field_annotation, field_value, typevar_to_types)
+        
+        # Convert to GenericInfo objects in the same order as type_params
+        concrete_args = []
+        for type_param in type_params:
+            inferred_types = typevar_to_types.get(type_param, set())
+            if inferred_types:
+                if len(inferred_types) == 1:
+                    # Single type inferred
+                    inferred_type = next(iter(inferred_types))
+                    concrete_args.append(GenericInfo(origin=inferred_type, is_generic=False))
+                else:
+                    # Multiple types, create union
+                    union_info = GenericInfo.make_union_if_needed([
+                        GenericInfo(origin=t, is_generic=False) for t in inferred_types
+                    ])
+                    concrete_args.append(union_info)
+            else:
+                # No type inferred, use the TypeVar itself
+                concrete_args.append(GenericInfo(origin=type_param, is_generic=False))
+        
+        return concrete_args
+
+    def _extract_typevar_bindings(self, annotation: Any, value: Any, typevar_to_types: Dict[TypeVar, Set[Any]]):
+        """Extract TypeVar bindings from a field annotation and its corresponding value."""
+        if isinstance(annotation, TypeVar):
+            # Direct TypeVar mapping
+            value_type = type(value)
+            typevar_to_types[annotation].add(value_type)
+        elif hasattr(annotation, "__origin__") and hasattr(annotation, "__args__"):
+            # Generic type with args
+            origin = get_origin(annotation)
+            args = get_args(annotation)
+            
+            if origin is list and isinstance(value, list) and value and args:
+                # List[TypeVar] -> infer TypeVar from list elements
+                element_types = {type(item) for item in value}
+                if isinstance(args[0], TypeVar):
+                    # Direct TypeVar binding for list elements
+                    for element_type in element_types:
+                        typevar_to_types[args[0]].add(element_type)
+                else:
+                    # Nested generic type - process recursively with actual values
+                    for item in value:
+                        self._extract_typevar_bindings(args[0], item, typevar_to_types)
+            elif origin is dict and isinstance(value, dict) and value and len(args) >= 2:
+                # Dict[TypeVar, TypeVar] -> infer from keys and values
+                if value:
+                    # Infer key types
+                    if isinstance(args[0], TypeVar):
+                        key_types = {type(k) for k in value.keys()}
+                        for key_type in key_types:
+                            typevar_to_types[args[0]].add(key_type)
+                    else:
+                        # Nested generic type for keys
+                        for key in value.keys():
+                            self._extract_typevar_bindings(args[0], key, typevar_to_types)
+                    
+                    # Infer value types
+                    if isinstance(args[1], TypeVar):
+                        value_types = {type(v) for v in value.values()}
+                        for value_type in value_types:
+                            typevar_to_types[args[1]].add(value_type)
+                    else:
+                        # Nested generic type for values
+                        for val in value.values():
+                            self._extract_typevar_bindings(args[1], val, typevar_to_types)
+            # Add more container types as needed
 
 
 class UnionExtractor(GenericExtractor):
@@ -357,13 +496,165 @@ class DataclassExtractor(GenericExtractor):
         if hasattr(instance, "__orig_class__"):
             args = get_args(instance.__orig_class__)
             for arg in args:
-
                 nested_info = get_generic_info(arg)
                 concrete_args.append(nested_info)
+        else:
+            # Try to infer from field values when __orig_class__ is not available
+            inferred_args = self._infer_from_field_values(instance)
+            if inferred_args:
+                concrete_args = inferred_args
 
         return GenericInfo(
             origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
         )
+
+    def _infer_from_field_values(self, instance: Any) -> List[GenericInfo]:
+        """Infer concrete type arguments from actual field values in a dataclass instance."""
+        try:
+            # Get the original type parameters from the class definition
+            original_type_params = self._get_original_type_parameters(type(instance))
+            if not original_type_params:
+                return []
+            
+            # Get field information from the dataclass
+            dataclass_fields = fields(instance)
+            if not dataclass_fields:
+                return []
+            
+            # Get field annotations and values
+            field_annotations = {}
+            field_values = {}
+            for field_info in dataclass_fields:
+                field_name = field_info.name
+                field_annotations[field_name] = field_info.type
+                if hasattr(instance, field_name):
+                    field_values[field_name] = getattr(instance, field_name)
+            
+            # Map type parameters to inferred types
+            return self._map_typevars_to_inferred_types(
+                original_type_params, field_annotations, field_values
+            )
+            
+        except Exception:
+            # If anything goes wrong, return empty list
+            return []
+
+    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
+        """Get the original TypeVar parameters from a dataclass definition."""
+        for base in getattr(dataclass_class, "__orig_bases__", []):
+            if hasattr(base, "__origin__") and hasattr(base, "__args__"):
+                # Look for Generic[A, B, ...] in the bases
+                origin = get_origin(base)
+                if origin and hasattr(origin, "__name__") and "Generic" in str(origin):
+                    args = get_args(base)
+                    return [arg for arg in args if isinstance(arg, TypeVar)]
+        return []
+
+    def _map_typevars_to_inferred_types(
+        self, type_params: List[TypeVar], field_annotations: Dict[str, Any], field_values: Dict[str, Any]
+    ) -> List[GenericInfo]:
+        """Map TypeVars to inferred types based on field values."""
+        # Create a mapping from TypeVar to inferred types
+        typevar_to_types: Dict[TypeVar, Set[Any]] = {tv: set() for tv in type_params}
+        
+        # Analyze each field
+        for field_name, field_annotation in field_annotations.items():
+            if field_name in field_values:
+                field_value = field_values[field_name]
+                self._extract_typevar_bindings(field_annotation, field_value, typevar_to_types)
+        
+        # Convert to GenericInfo objects in the same order as type_params
+        concrete_args = []
+        for type_param in type_params:
+            inferred_types = typevar_to_types.get(type_param, set())
+            if inferred_types:
+                if len(inferred_types) == 1:
+                    # Single type inferred
+                    inferred_type = next(iter(inferred_types))
+                    concrete_args.append(GenericInfo(origin=inferred_type, is_generic=False))
+                else:
+                    # Multiple types, create union
+                    union_info = GenericInfo.make_union_if_needed([
+                        GenericInfo(origin=t, is_generic=False) for t in inferred_types
+                    ])
+                    concrete_args.append(union_info)
+            else:
+                # No type inferred, use the TypeVar itself
+                concrete_args.append(GenericInfo(origin=type_param, is_generic=False))
+        
+        return concrete_args
+
+    def _extract_typevar_bindings(self, annotation: Any, value: Any, typevar_to_types: Dict[TypeVar, Set[Any]]):
+        """Extract TypeVar bindings from a field annotation and its corresponding value."""
+        if isinstance(annotation, TypeVar):
+            # Direct TypeVar mapping
+            value_type = type(value)
+            typevar_to_types[annotation].add(value_type)
+        elif hasattr(annotation, "__origin__") and hasattr(annotation, "__args__"):
+            # Generic type with args
+            origin = get_origin(annotation)
+            args = get_args(annotation)
+            
+            if origin is list and isinstance(value, list) and value and args:
+                # List[TypeVar] -> infer TypeVar from list elements
+                element_types = {type(item) for item in value}
+                if isinstance(args[0], TypeVar):
+                    # Direct TypeVar binding for list elements
+                    for element_type in element_types:
+                        typevar_to_types[args[0]].add(element_type)
+                else:
+                    # Nested generic type - process recursively with actual values
+                    for item in value:
+                        self._extract_typevar_bindings(args[0], item, typevar_to_types)
+            elif origin is dict and isinstance(value, dict) and value and len(args) >= 2:
+                # Dict[TypeVar, TypeVar] -> infer from keys and values
+                if value:
+                    # Infer key types
+                    if isinstance(args[0], TypeVar):
+                        key_types = {type(k) for k in value.keys()}
+                        for key_type in key_types:
+                            typevar_to_types[args[0]].add(key_type)
+                    else:
+                        # Nested generic type for keys
+                        for key in value.keys():
+                            self._extract_typevar_bindings(args[0], key, typevar_to_types)
+                    
+                    # Infer value types
+                    if isinstance(args[1], TypeVar):
+                        value_types = {type(v) for v in value.values()}
+                        for value_type in value_types:
+                            typevar_to_types[args[1]].add(value_type)
+                    else:
+                        # Nested generic type for values
+                        for val in value.values():
+                            self._extract_typevar_bindings(args[1], val, typevar_to_types)
+            elif origin is tuple and isinstance(value, tuple) and value and args:
+                # Tuple[TypeVar, ...] -> infer from tuple elements
+                if len(args) == 2 and args[1] is ...:
+                    # Variable length tuple Tuple[T, ...]
+                    element_types = {type(item) for item in value}
+                    for element_type in element_types:
+                        self._extract_typevar_bindings(args[0], element_type, typevar_to_types)
+                else:
+                    # Fixed length tuple
+                    for i, arg in enumerate(args):
+                        if i < len(value):
+                            self._extract_typevar_bindings(arg, value[i], typevar_to_types)
+            elif origin is set and isinstance(value, set) and value and args:
+                # Set[TypeVar] -> infer TypeVar from set elements
+                element_types = {type(item) for item in value}
+                for element_type in element_types:
+                    self._extract_typevar_bindings(args[0], element_type, typevar_to_types)
+            # Handle nested custom types
+            elif hasattr(value, "__class__") and hasattr(value.__class__, "__orig_bases__"):
+                # This might be another generic type instance, try to get its concrete args
+                nested_info = get_instance_generic_info(value)
+                if nested_info.concrete_args and args:
+                    # Try to align the nested concrete args with our annotation args
+                    for i, (annotation_arg, nested_arg) in enumerate(zip(args, nested_info.concrete_args)):
+                        if nested_arg.origin and not isinstance(nested_arg.origin, TypeVar):
+                            # Use the resolved type from the nested instance
+                            self._extract_typevar_bindings(annotation_arg, nested_arg.origin, typevar_to_types)
 
 
 class GenericTypeUtils:

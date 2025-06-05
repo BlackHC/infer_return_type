@@ -230,8 +230,9 @@ class TestPydanticExtractor:
         
         info = extractor.extract_from_annotation(PydanticBox)
         assert info.origin is PydanticBox
-        # The unparameterized class doesn't have type_params populated automatically
-        assert info.is_generic == False  # No concrete args for unparameterized base
+        # The unparameterized class with TypeVar parameters should be considered generic
+        assert info.is_generic == True  # Has TypeVar parameters
+        assert A in info.type_params
         
         # Parameterized Pydantic class
         info = extractor.extract_from_annotation(PydanticBox[int])
@@ -250,8 +251,9 @@ class TestPydanticExtractor:
         
         info = extractor.extract_from_annotation(PydanticPair)
         assert info.origin is PydanticPair
-        # The unparameterized class doesn't have type_params populated automatically
-        assert info.is_generic == False  # No concrete args for unparameterized base
+        # The unparameterized class with TypeVar parameters should be considered generic
+        assert info.is_generic == True  # Has TypeVar parameters
+        assert set(info.type_params) == {A, B}
     
     def test_pydantic_instance(self):
         extractor = PydanticExtractor()
@@ -332,9 +334,10 @@ class TestDataclassExtractor:
         
         info = extractor.extract_from_instance(instance)
         assert info.origin is DataclassBox
-        assert info.concrete_args == []  # Can't infer without __orig_class__
-        # Without concrete args, is_generic is False
-        assert not info.is_generic
+        # With enhanced field value inference, should now infer int from item=42
+        assert len(info.concrete_args) == 1
+        assert info.concrete_args[0].origin == int
+        assert info.is_generic
 
 
 class TestGenericTypeUtils:
