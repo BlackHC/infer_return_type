@@ -8,14 +8,15 @@ generic type systems (built-ins, Pydantic, dataclasses).
 import pytest
 import typing
 import types
-from typing import TypeVar, List, Dict, Tuple, Set, Union, get_origin, get_args
+from typing import TypeVar, List, Dict, Tuple, Union, get_origin, get_args
 from dataclasses import dataclass
 
 from generic_utils import (
-    GenericInfo, GenericTypeUtils, BuiltinExtractor, PydanticExtractor, DataclassExtractor,
+    GenericTypeUtils, BuiltinExtractor, PydanticExtractor, DataclassExtractor,
     UnionExtractor, create_union_if_needed,
     get_generic_info, get_instance_generic_info, get_type_parameters, get_concrete_args,
-    get_instance_concrete_args, get_generic_origin, is_generic_type, extract_all_typevars
+    get_instance_concrete_args, get_generic_origin, is_generic_type, extract_all_typevars,
+    get_resolved_type
 )
 
 # Test fixtures
@@ -28,9 +29,12 @@ U = TypeVar('U', int, float)
 def _is_union_type(obj):
     """Helper to check if object is a Union type (handles both typing.Union and types.UnionType)."""
     # Check if obj is Union itself (typing.Union) or a parameterized Union (Union[int, str])
-    if obj is Union:
-        return True
     origin = get_origin(obj)
+    return origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType'))
+
+
+def _is_union_origin(origin):
+    """Helper to check if an origin is a Union type (either typing.Union or types.UnionType)."""
     return origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType'))
 
 
@@ -708,6 +712,387 @@ class TestUtilityFunctions:
         assert dict[str, int] in union_args
 
 
+@pytest.mark.skipif(not hasattr(types, 'UnionType'), reason="types.UnionType not available")
+class TestModernUnionTypes:
+    """Test modern union types (A | B syntax) throughout the system."""
+    
+    def test_builtin_modern_union_annotations(self):
+        """Test built-in containers with modern union type arguments."""
+        utils = GenericTypeUtils()
+        
+        # list[int | str]
+        modern_list_union = list[int | str]
+        info = utils.get_generic_info(modern_list_union)
+        assert info.origin is list
+        assert len(info.concrete_args) == 1
+        union_arg = info.concrete_args[0]
+        assert union_arg.origin is getattr(types, 'UnionType')  # Pure type unions should preserve UnionType
+        assert set(union_arg.resolved_concrete_args) == {int, str}
+        assert info.is_generic
+        
+        # dict[str, int | float]
+        modern_dict_union = dict[str, int | float]
+        info = utils.get_generic_info(modern_dict_union)
+        assert info.origin is dict
+        assert len(info.concrete_args) == 2
+        assert info.concrete_args[0].origin is str
+        union_arg = info.concrete_args[1]
+        assert union_arg.origin is getattr(types, 'UnionType')  # Pure type unions should preserve UnionType
+        assert set(union_arg.resolved_concrete_args) == {int, float}
+        
+        # tuple[int | str, bool | None]
+        modern_tuple_union = tuple[int | str, bool | None]
+        info = utils.get_generic_info(modern_tuple_union)
+        assert info.origin is tuple
+        assert len(info.concrete_args) == 2
+        union_arg1 = info.concrete_args[0]
+        union_arg2 = info.concrete_args[1]
+        assert union_arg1.origin is getattr(types, 'UnionType')  # Pure type unions should preserve UnionType
+        assert union_arg2.origin is getattr(types, 'UnionType')  # Pure type unions should preserve UnionType
+        assert set(union_arg1.resolved_concrete_args) == {int, str}
+        assert set(union_arg2.resolved_concrete_args) == {bool, type(None)}
+        
+        # set[A | int] with TypeVar
+        A = TypeVar('A')
+        modern_set_union_typevar = set[A | int]
+        info = utils.get_generic_info(modern_set_union_typevar)
+        assert info.origin is set
+        assert len(info.concrete_args) == 1
+        union_arg = info.concrete_args[0]
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(union_arg.origin)
+        assert A in union_arg.type_params
+        assert int in union_arg.resolved_concrete_args
+    
+    def test_modern_union_typevar_extraction(self):
+        """Test TypeVar extraction from modern union types."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        # Simple A | B
+        typevars = extract_all_typevars(A | B)
+        assert set(typevars) == {A, B}
+        
+        # Nested: list[A | B]
+        typevars = extract_all_typevars(list[A | B])
+        assert set(typevars) == {A, B}
+        
+        # Complex nesting: dict[A | str, list[B | int]]
+        typevars = extract_all_typevars(dict[A | str, list[B | int]])
+        assert set(typevars) == {A, B}
+        
+        # Mixed with concrete types: tuple[A | int, str | B]
+        typevars = extract_all_typevars(tuple[A | int, str | B])
+        assert set(typevars) == {A, B}
+    
+    def test_modern_union_instance_inference(self):
+        """Test instance inference creates modern unions when appropriate."""
+        utils = GenericTypeUtils()
+        
+        # Mixed list should create union
+        mixed_list = [1, "hello", 3.14]
+        info = utils.get_instance_generic_info(mixed_list)
+        assert info.origin is list
+        assert len(info.concrete_args) == 1
+        union_arg = info.concrete_args[0]
+        # Should be a union (could be typing.Union or types.UnionType)
+        assert _is_union_type(union_arg.resolved_type)
+        union_types = set(get_args(union_arg.resolved_type))
+        assert union_types == {int, str, float}
+        
+        # Mixed dict values
+        mixed_dict = {"a": 1, "b": "hello", "c": 3.14}
+        info = utils.get_instance_generic_info(mixed_dict)
+        assert info.origin is dict
+        assert len(info.concrete_args) == 2
+        assert info.concrete_args[0].origin is str  # Keys are homogeneous
+        union_arg = info.concrete_args[1]  # Values are mixed
+        assert _is_union_type(union_arg.resolved_type)
+        union_types = set(get_args(union_arg.resolved_type))
+        assert union_types == {int, str, float}
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_modern_union_annotations(self):
+        """Test Pydantic models with modern union annotations."""
+        A = TypeVar('A')
+        
+        class ModernUnionBox(BaseModel, typing.Generic[A]):
+            value: A | str
+        
+        utils = GenericTypeUtils()
+        
+        # Test annotation
+        info = utils.get_generic_info(ModernUnionBox[int])
+        assert info.origin is ModernUnionBox
+        assert len(info.concrete_args) == 1
+        assert info.concrete_args[0].origin is int
+        
+        # Test instance
+        instance = ModernUnionBox[int](value=42)
+        info = utils.get_instance_generic_info(instance)
+        assert info.origin is ModernUnionBox
+        assert len(info.concrete_args) == 1
+        assert info.concrete_args[0].origin is int
+        
+        # Test with actual union value
+        instance_str = ModernUnionBox[int](value="hello")
+        info = utils.get_instance_generic_info(instance_str)
+        assert info.origin is ModernUnionBox
+        assert len(info.concrete_args) == 1
+        assert info.concrete_args[0].origin is int  # Type param, not inferred from value
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_field_value_inference_modern_unions(self):
+        """Test field value inference with modern unions."""
+        A = TypeVar('A')
+        
+        class MixedFieldBox(BaseModel, typing.Generic[A]):
+            field1: A
+            field2: A
+        
+        # Create instance with conflicting types for same TypeVar
+        instance = MixedFieldBox(field1=42, field2="hello")
+        
+        extractor = PydanticExtractor()
+        info = extractor.extract_from_instance(instance)
+        
+        assert info.origin is MixedFieldBox
+        assert len(info.concrete_args) == 1
+        # Should create union for A
+        inferred_type = info.concrete_args[0]
+        assert inferred_type.origin is Union  # Could be Union or UnionType
+        union_args = set(arg.origin for arg in inferred_type.concrete_args)
+        assert union_args == {int, str}
+    
+    def test_dataclass_modern_union_annotations(self):
+        """Test dataclass with modern union annotations."""
+        A = TypeVar('A')
+        
+        @dataclass
+        class ModernUnionDataBox(typing.Generic[A]):
+            value: A | None
+        
+        utils = GenericTypeUtils()
+        
+        # Test annotation
+        info = utils.get_generic_info(ModernUnionDataBox[int])
+        assert info.origin is ModernUnionDataBox
+        assert len(info.concrete_args) == 1
+        assert info.concrete_args[0].origin is int
+        
+        # Test instance with __orig_class__
+        instance = ModernUnionDataBox[str](value="hello")
+        instance.__orig_class__ = ModernUnionDataBox[str]
+        info = utils.get_instance_generic_info(instance)
+        assert info.origin is ModernUnionDataBox
+        assert len(info.concrete_args) == 1
+        assert info.concrete_args[0].origin is str
+    
+    def test_dataclass_field_value_inference_modern_unions(self):
+        """Test dataclass field value inference with modern unions."""
+        A = TypeVar('A')
+        
+        @dataclass
+        class MixedFieldDataBox(typing.Generic[A]):
+            field1: A
+            field2: A
+        
+        # Create instance with conflicting types for same TypeVar
+        instance = MixedFieldDataBox(field1=42, field2="hello")
+        
+        extractor = DataclassExtractor()
+        info = extractor.extract_from_instance(instance)
+        
+        assert info.origin is MixedFieldDataBox
+        assert len(info.concrete_args) == 1
+        # Should create union for A
+        inferred_type = info.concrete_args[0]
+        assert inferred_type.origin is Union  # Could be Union or UnionType
+        union_args = set(arg.origin for arg in inferred_type.concrete_args)
+        assert union_args == {int, str}
+    
+    def test_deeply_nested_modern_unions(self):
+        """Test deeply nested structures with modern unions."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        # Complex nesting: list[dict[A | str, tuple[B | int, set[A | B]]]]
+        complex_annotation = list[dict[A | str, tuple[B | int, set[A | B]]]]
+        
+        typevars = extract_all_typevars(complex_annotation)
+        assert set(typevars) == {A, B}
+        
+        info = get_generic_info(complex_annotation)
+        assert info.origin is list
+        assert len(info.concrete_args) == 1
+        
+        # Verify the structure is preserved
+        dict_arg = info.concrete_args[0]
+        assert dict_arg.origin is dict
+        assert len(dict_arg.concrete_args) == 2
+        
+        # Check key type (A | str)
+        key_union = dict_arg.concrete_args[0]
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(key_union.origin)
+        assert A in key_union.type_params
+        
+        # Check value type (tuple[B | int, set[A | B]])
+        tuple_arg = dict_arg.concrete_args[1]
+        assert tuple_arg.origin is tuple
+        assert len(tuple_arg.concrete_args) == 2
+        
+        # First tuple element: B | int
+        first_union = tuple_arg.concrete_args[0]
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(first_union.origin)
+        assert B in first_union.type_params
+        
+        # Second tuple element: set[A | B]
+        set_arg = tuple_arg.concrete_args[1]
+        assert set_arg.origin is set
+        nested_union = set_arg.concrete_args[0]
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(nested_union.origin)
+        assert set(nested_union.type_params) == {A, B}
+    
+    def test_convenience_functions_modern_unions(self):
+        """Test all convenience functions work with modern unions."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        # Test with list[A | B]
+        modern_list_union = list[A | B]
+        
+        # get_generic_info
+        info = get_generic_info(modern_list_union)
+        assert info.origin is list
+        union_arg = info.concrete_args[0]
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(union_arg.origin)
+        
+        # get_type_parameters
+        params = get_type_parameters(modern_list_union)
+        assert set(params) == {A, B}
+        
+        # get_concrete_args
+        args = get_concrete_args(modern_list_union)
+        assert len(args) == 1
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(args[0].origin)
+        
+        # get_generic_origin
+        origin = get_generic_origin(modern_list_union)
+        assert origin is list
+        
+        # is_generic_type
+        assert is_generic_type(modern_list_union)
+        assert is_generic_type(A | B)
+        
+        # get_resolved_type
+        resolved = get_resolved_type(modern_list_union)
+        assert get_origin(resolved) is list
+        
+        # extract_all_typevars
+        all_typevars = extract_all_typevars(modern_list_union)
+        assert set(all_typevars) == {A, B}
+    
+    def test_modern_union_instance_args(self):
+        """Test get_instance_concrete_args with modern unions."""
+        # Create instances that should result in modern union types
+        mixed_list = [1, "hello"]
+        
+        args = get_instance_concrete_args(mixed_list)
+        assert len(args) == 1
+        union_arg = args[0]
+        assert _is_union_type(union_arg.resolved_type)
+        union_types = set(get_args(union_arg.resolved_type))
+        assert union_types == {int, str}
+        
+        # Mixed dict
+        mixed_dict = {"a": 1, "b": "hello"}
+        args = get_instance_concrete_args(mixed_dict)
+        assert len(args) == 2
+        assert args[0].origin is str  # Keys
+        union_arg = args[1]  # Values
+        assert _is_union_type(union_arg.resolved_type)
+        union_types = set(get_args(union_arg.resolved_type))
+        assert union_types == {int, str}
+    
+    def test_modern_union_with_none(self):
+        """Test modern union types with None (optional types)."""
+        A = TypeVar('A')
+        
+        # A | None
+        optional_typevar = A | None
+        typevars = extract_all_typevars(optional_typevar)
+        assert typevars == [A]
+        
+        info = get_generic_info(optional_typevar)
+        # TypeVar unions might be converted to typing.Union
+        assert _is_union_origin(info.origin)
+        assert A in info.type_params
+        assert type(None) in info.resolved_concrete_args
+        
+        # list[int | None]
+        optional_list = list[int | None]
+        info = get_generic_info(optional_list)
+        assert info.origin is list
+        union_arg = info.concrete_args[0]
+        assert union_arg.origin is getattr(types, 'UnionType')  # Pure type unions should preserve UnionType
+        assert set(union_arg.resolved_concrete_args) == {int, type(None)}
+    
+    def test_modern_union_equality_and_hashing(self):
+        """Test that modern union GenericInfo objects work with equality and hashing."""
+        A = TypeVar('A')
+        
+        # Create two equivalent modern union GenericInfo objects (pure types)
+        info1 = get_generic_info(list[int | str])
+        info2 = get_generic_info(list[int | str])
+        
+        # They should be equal
+        assert info1 == info2
+        
+        # They should have the same hash (for use in sets/dicts)
+        assert hash(info1) == hash(info2)
+        
+        # Test with sets
+        info_set = {info1, info2}
+        assert len(info_set) == 1  # Should deduplicate
+        
+        # Test with TypeVars (just check that they work, might not be equal due to union type conversion)
+        info3 = get_generic_info(A | int)
+        info4 = get_generic_info(A | int)
+        # TypeVar unions behavior might vary, so just check they're hashable
+        assert isinstance(hash(info3), int)
+        assert isinstance(hash(info4), int)
+    
+    def test_modern_union_resolved_type_property(self):
+        """Test that resolved_type property works correctly with modern unions."""
+        A = TypeVar('A')
+        
+        # Test direct modern union (pure types)
+        union_info = get_generic_info(int | str)
+        resolved = union_info.resolved_type
+        assert _is_union_type(resolved)
+        assert set(get_args(resolved)) == {int, str}
+        
+        # Test nested modern union (pure types)
+        list_union_info = get_generic_info(list[int | str])
+        resolved = list_union_info.resolved_type
+        assert get_origin(resolved) is list
+        inner_union = get_args(resolved)[0]
+        assert _is_union_type(inner_union)
+        assert set(get_args(inner_union)) == {int, str}
+        
+        # Test with TypeVar (might be converted to typing.Union)
+        typevar_union_info = get_generic_info(A | int)
+        resolved = typevar_union_info.resolved_type
+        assert _is_union_type(resolved)
+        assert A in get_args(resolved)
+        assert int in get_args(resolved)
+
+
 class TestEnhancedInferenceEdgeCases:
     """Test edge cases and tricky scenarios for enhanced field value inference."""
     
@@ -837,8 +1222,7 @@ class TestEnhancedInferenceEdgeCases:
         
         # Should create union of all element types
         inferred_type = info.concrete_args[0]
-        # Check if it's a Union type using get_origin instead of direct comparison
-        assert _is_union_type(inferred_type.origin)
+        assert inferred_type.origin is Union
         union_args = set(arg.origin for arg in inferred_type.concrete_args)
         # Note: True is a bool, which might be included or might be filtered as int
         expected_types = {int, str, float}
@@ -886,8 +1270,8 @@ class TestEnhancedInferenceEdgeCases:
         type_a = info.concrete_args[0]
         type_b = info.concrete_args[1]
         
-        assert _is_union_type(type_a.origin)
-        assert _is_union_type(type_b.origin)
+        assert type_a.origin is Union
+        assert type_b.origin is Union
         
         a_types = set(arg.origin for arg in type_a.concrete_args)
         b_types = set(arg.origin for arg in type_b.concrete_args)
@@ -1044,7 +1428,7 @@ class TestEnhancedInferenceEdgeCases:
         
         # Should create union type
         inferred_type = info.concrete_args[0]
-        assert _is_union_type(inferred_type.origin)
+        assert inferred_type.origin is Union
         union_args = set(arg.origin for arg in inferred_type.concrete_args)
         assert union_args == {int, str}
 

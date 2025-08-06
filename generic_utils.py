@@ -90,11 +90,11 @@ class GenericInfo:
         for arg in self.concrete_args:
             resolved_args.append(arg.resolved_type)
 
-        if get_origin(self.origin) is Union or (
-            hasattr(types, "UnionType")
-            and get_origin(self.origin) is getattr(types, "UnionType")
+        if (
+            self.origin is Union 
+            or (hasattr(types, "UnionType") and self.origin is getattr(types, "UnionType"))
         ):
-            # Handle Union types
+            # Handle Union types (both typing.Union and types.UnionType)
             return create_union_if_needed(set(resolved_args))
         elif self.origin in (tuple, typing.Tuple):
             if len(resolved_args) == 2 and resolved_args[1] is ...:
