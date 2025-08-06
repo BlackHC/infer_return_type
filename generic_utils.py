@@ -385,45 +385,57 @@ class PydanticExtractor(GenericExtractor):
             # Direct TypeVar mapping
             value_type = type(value)
             typevar_to_types[annotation].add(value_type)
-        elif hasattr(annotation, "__origin__") and hasattr(annotation, "__args__"):
-            # Generic type with args
-            origin = get_origin(annotation)
-            args = get_args(annotation)
+        else:
+            # Use the global inference system to get the runtime type of the value
+            runtime_info = get_instance_generic_info(value)
             
-            if origin is list and isinstance(value, list) and value and args:
-                # List[TypeVar] -> infer TypeVar from list elements
-                element_types = {type(item) for item in value}
-                if isinstance(args[0], TypeVar):
-                    # Direct TypeVar binding for list elements
-                    for element_type in element_types:
-                        typevar_to_types[args[0]].add(element_type)
-                else:
-                    # Nested generic type - process recursively with actual values
-                    for item in value:
-                        self._extract_typevar_bindings(args[0], item, typevar_to_types)
-            elif origin is dict and isinstance(value, dict) and value and len(args) >= 2:
-                # Dict[TypeVar, TypeVar] -> infer from keys and values
-                if value:
-                    # Infer key types
-                    if isinstance(args[0], TypeVar):
-                        key_types = {type(k) for k in value.keys()}
-                        for key_type in key_types:
-                            typevar_to_types[args[0]].add(key_type)
-                    else:
-                        # Nested generic type for keys
-                        for key in value.keys():
-                            self._extract_typevar_bindings(args[0], key, typevar_to_types)
+            # Perform unification between annotation and runtime type
+            self._unify_annotation_with_runtime(annotation, runtime_info, typevar_to_types)
+
+    def _unify_annotation_with_runtime(self, annotation: Any, runtime_info: Any, typevar_to_types: Dict[TypeVar, Set[Any]]):
+        """Unify an annotation structure with runtime type information to extract TypeVar bindings."""
+        # Get annotation structure using get_origin/get_args to avoid circular imports
+        ann_origin = get_origin(annotation) or annotation
+        ann_args = get_args(annotation)
+        
+        # Handle different unification cases
+        if isinstance(annotation, TypeVar):
+            # Direct TypeVar to runtime type mapping
+            if runtime_info.is_generic and runtime_info.resolved_type:
+                typevar_to_types[annotation].add(runtime_info.resolved_type)
+            else:
+                typevar_to_types[annotation].add(runtime_info.origin)
+        elif ann_origin == runtime_info.origin:
+            # Same container type, unify arguments
+            if ann_args and runtime_info.concrete_args:
+                min_args = min(len(ann_args), len(runtime_info.concrete_args))
+                for i in range(min_args):
+                    ann_arg = ann_args[i]
+                    runtime_arg = runtime_info.concrete_args[i]
                     
-                    # Infer value types
-                    if isinstance(args[1], TypeVar):
-                        value_types = {type(v) for v in value.values()}
-                        for value_type in value_types:
-                            typevar_to_types[args[1]].add(value_type)
-                    else:
-                        # Nested generic type for values
-                        for val in value.values():
-                            self._extract_typevar_bindings(args[1], val, typevar_to_types)
-            # Add more container types as needed
+                    # Recursively unify argument structures
+                    if isinstance(ann_arg, TypeVar):
+                        # Annotation has TypeVar, bind it to runtime type
+                        if runtime_arg.origin is Union and runtime_arg.concrete_args:
+                            # If runtime type is a Union, add all member types individually
+                            for union_member in runtime_arg.concrete_args:
+                                if union_member.is_generic and union_member.resolved_type:
+                                    typevar_to_types[ann_arg].add(union_member.resolved_type)
+                                else:
+                                    typevar_to_types[ann_arg].add(union_member.origin)
+                        elif runtime_arg.is_generic and runtime_arg.resolved_type:
+                            typevar_to_types[ann_arg].add(runtime_arg.resolved_type)
+                        else:
+                            typevar_to_types[ann_arg].add(runtime_arg.origin)
+                    elif hasattr(ann_arg, "__origin__") or hasattr(ann_arg, "__args__"):
+                        # Nested structure, recurse
+                        self._unify_annotation_with_runtime(ann_arg, runtime_arg, typevar_to_types)
+        elif ann_args and not runtime_info.is_generic:
+            # Annotation is generic but runtime isn't (e.g., List[A] vs plain object)
+            # Extract TypeVars from annotation args
+            for ann_arg in ann_args:
+                if isinstance(ann_arg, TypeVar):
+                    typevar_to_types[ann_arg].add(runtime_info.origin)
 
 
 class UnionExtractor(GenericExtractor):
@@ -590,71 +602,57 @@ class DataclassExtractor(GenericExtractor):
             # Direct TypeVar mapping
             value_type = type(value)
             typevar_to_types[annotation].add(value_type)
-        elif hasattr(annotation, "__origin__") and hasattr(annotation, "__args__"):
-            # Generic type with args
-            origin = get_origin(annotation)
-            args = get_args(annotation)
+        else:
+            # Use the global inference system to get the runtime type of the value
+            runtime_info = get_instance_generic_info(value)
             
-            if origin is list and isinstance(value, list) and value and args:
-                # List[TypeVar] -> infer TypeVar from list elements
-                element_types = {type(item) for item in value}
-                if isinstance(args[0], TypeVar):
-                    # Direct TypeVar binding for list elements
-                    for element_type in element_types:
-                        typevar_to_types[args[0]].add(element_type)
-                else:
-                    # Nested generic type - process recursively with actual values
-                    for item in value:
-                        self._extract_typevar_bindings(args[0], item, typevar_to_types)
-            elif origin is dict and isinstance(value, dict) and value and len(args) >= 2:
-                # Dict[TypeVar, TypeVar] -> infer from keys and values
-                if value:
-                    # Infer key types
-                    if isinstance(args[0], TypeVar):
-                        key_types = {type(k) for k in value.keys()}
-                        for key_type in key_types:
-                            typevar_to_types[args[0]].add(key_type)
-                    else:
-                        # Nested generic type for keys
-                        for key in value.keys():
-                            self._extract_typevar_bindings(args[0], key, typevar_to_types)
+            # Perform unification between annotation and runtime type
+            self._unify_annotation_with_runtime(annotation, runtime_info, typevar_to_types)
+
+    def _unify_annotation_with_runtime(self, annotation: Any, runtime_info: Any, typevar_to_types: Dict[TypeVar, Set[Any]]):
+        """Unify an annotation structure with runtime type information to extract TypeVar bindings."""
+        # Get annotation structure using get_origin/get_args to avoid circular imports
+        ann_origin = get_origin(annotation) or annotation
+        ann_args = get_args(annotation)
+        
+        # Handle different unification cases
+        if isinstance(annotation, TypeVar):
+            # Direct TypeVar to runtime type mapping
+            if runtime_info.is_generic and runtime_info.resolved_type:
+                typevar_to_types[annotation].add(runtime_info.resolved_type)
+            else:
+                typevar_to_types[annotation].add(runtime_info.origin)
+        elif ann_origin == runtime_info.origin:
+            # Same container type, unify arguments
+            if ann_args and runtime_info.concrete_args:
+                min_args = min(len(ann_args), len(runtime_info.concrete_args))
+                for i in range(min_args):
+                    ann_arg = ann_args[i]
+                    runtime_arg = runtime_info.concrete_args[i]
                     
-                    # Infer value types
-                    if isinstance(args[1], TypeVar):
-                        value_types = {type(v) for v in value.values()}
-                        for value_type in value_types:
-                            typevar_to_types[args[1]].add(value_type)
-                    else:
-                        # Nested generic type for values
-                        for val in value.values():
-                            self._extract_typevar_bindings(args[1], val, typevar_to_types)
-            elif origin is tuple and isinstance(value, tuple) and value and args:
-                # Tuple[TypeVar, ...] -> infer from tuple elements
-                if len(args) == 2 and args[1] is ...:
-                    # Variable length tuple Tuple[T, ...]
-                    element_types = {type(item) for item in value}
-                    for element_type in element_types:
-                        self._extract_typevar_bindings(args[0], element_type, typevar_to_types)
-                else:
-                    # Fixed length tuple
-                    for i, arg in enumerate(args):
-                        if i < len(value):
-                            self._extract_typevar_bindings(arg, value[i], typevar_to_types)
-            elif origin is set and isinstance(value, set) and value and args:
-                # Set[TypeVar] -> infer TypeVar from set elements
-                element_types = {type(item) for item in value}
-                for element_type in element_types:
-                    self._extract_typevar_bindings(args[0], element_type, typevar_to_types)
-            # Handle nested custom types
-            elif hasattr(value, "__class__") and hasattr(value.__class__, "__orig_bases__"):
-                # This might be another generic type instance, try to get its concrete args
-                nested_info = get_instance_generic_info(value)
-                if nested_info.concrete_args and args:
-                    # Try to align the nested concrete args with our annotation args
-                    for i, (annotation_arg, nested_arg) in enumerate(zip(args, nested_info.concrete_args)):
-                        if nested_arg.origin and not isinstance(nested_arg.origin, TypeVar):
-                            # Use the resolved type from the nested instance
-                            self._extract_typevar_bindings(annotation_arg, nested_arg.origin, typevar_to_types)
+                    # Recursively unify argument structures
+                    if isinstance(ann_arg, TypeVar):
+                        # Annotation has TypeVar, bind it to runtime type
+                        if runtime_arg.origin is Union and runtime_arg.concrete_args:
+                            # If runtime type is a Union, add all member types individually
+                            for union_member in runtime_arg.concrete_args:
+                                if union_member.is_generic and union_member.resolved_type:
+                                    typevar_to_types[ann_arg].add(union_member.resolved_type)
+                                else:
+                                    typevar_to_types[ann_arg].add(union_member.origin)
+                        elif runtime_arg.is_generic and runtime_arg.resolved_type:
+                            typevar_to_types[ann_arg].add(runtime_arg.resolved_type)
+                        else:
+                            typevar_to_types[ann_arg].add(runtime_arg.origin)
+                    elif hasattr(ann_arg, "__origin__") or hasattr(ann_arg, "__args__"):
+                        # Nested structure, recurse
+                        self._unify_annotation_with_runtime(ann_arg, runtime_arg, typevar_to_types)
+        elif ann_args and not runtime_info.is_generic:
+            # Annotation is generic but runtime isn't (e.g., List[A] vs plain object)
+            # Extract TypeVars from annotation args
+            for ann_arg in ann_args:
+                if isinstance(ann_arg, TypeVar):
+                    typevar_to_types[ann_arg].add(runtime_info.origin)
 
 
 class GenericTypeUtils:
