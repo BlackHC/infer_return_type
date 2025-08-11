@@ -30,7 +30,7 @@ def _is_union_type(obj):
     """Helper to check if object is a Union type (handles both typing.Union and types.UnionType)."""
     # Check if obj is Union itself (typing.Union) or a parameterized Union (Union[int, str])
     origin = get_origin(obj)
-    return origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType'))
+    return _is_union_origin(origin)
 
 
 def _is_union_origin(origin):
