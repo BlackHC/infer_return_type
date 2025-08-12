@@ -33,12 +33,16 @@ class GenericInfo:
 
     origin: Any = None
     concrete_args: List["GenericInfo"] = field(default_factory=list)
-    is_generic: bool = False
     type_params: List[TypeVar] = field(init=False)
 
     def __post_init__(self):
         """Compute derived fields after initialization."""
         object.__setattr__(self, "type_params", self._compute_type_params())
+
+    @property
+    def is_generic(self) -> bool:
+        """Whether this type has generic information (computed from concrete_args)."""
+        return bool(self.concrete_args)
 
     @staticmethod
     def make_union_if_needed(sub_generic_infos: Iterable["GenericInfo"]) -> "GenericInfo":
@@ -48,10 +52,10 @@ class GenericInfo:
             return next(iter(sub_generic_infos))
         elif len(sub_generic_infos) > 1:
             return GenericInfo(
-                origin=Union, concrete_args=list(sub_generic_infos), is_generic=True
+                origin=Union, concrete_args=list(sub_generic_infos)
             )
         else:
-            return GenericInfo(origin=type(None), is_generic=False)
+            return GenericInfo(origin=type(None))
 
     def _compute_type_params(self) -> List[TypeVar]:
         """Compute TypeVars from concrete_args and their nested type_params."""
@@ -162,16 +166,16 @@ class FieldBasedExtractor(GenericExtractor):
             if inferred_types:
                 if len(inferred_types) == 1:
                     inferred_type = next(iter(inferred_types))
-                    concrete_args.append(GenericInfo(origin=inferred_type, is_generic=False))
+                    concrete_args.append(GenericInfo(origin=inferred_type))
                 else:
                     # Multiple types, create union
                     union_info = GenericInfo.make_union_if_needed([
-                        GenericInfo(origin=t, is_generic=False) for t in inferred_types
+                        GenericInfo(origin=t) for t in inferred_types
                     ])
                     concrete_args.append(union_info)
             else:
                 # No type inferred, use the TypeVar itself
-                concrete_args.append(GenericInfo(origin=type_param, is_generic=False))
+                concrete_args.append(GenericInfo(origin=type_param))
         
         return concrete_args
 
@@ -250,7 +254,7 @@ class BuiltinExtractor(GenericExtractor):
         concrete_args = [get_generic_info(arg) for arg in args]
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
@@ -258,7 +262,7 @@ class BuiltinExtractor(GenericExtractor):
         concrete_args = self._infer_args_from_content(instance)
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def _infer_args_from_content(self, instance: Any) -> List[GenericInfo]:
@@ -305,12 +309,12 @@ class PydanticExtractor(FieldBasedExtractor):
             origin = annotation
             original_type_params = self._get_original_type_parameters(annotation)
             concrete_args = [
-                GenericInfo(origin=type_param, is_generic=False) 
+                GenericInfo(origin=type_param) 
                 for type_param in original_type_params
             ]
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
@@ -331,7 +335,7 @@ class PydanticExtractor(FieldBasedExtractor):
             concrete_args = self._infer_from_field_values(instance)
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def _infer_from_field_values(self, instance: Any) -> List[GenericInfo]:
@@ -382,12 +386,12 @@ class UnionExtractor(GenericExtractor):
         concrete_args = [get_generic_info(arg) for arg in args]
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
         """Union types don't have instances directly."""
-        return GenericInfo(origin=type(instance), is_generic=False)
+        return GenericInfo(origin=type(instance))
 
 
 class DataclassExtractor(FieldBasedExtractor):
@@ -410,7 +414,7 @@ class DataclassExtractor(FieldBasedExtractor):
         concrete_args = [get_generic_info(arg) for arg in args]
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
@@ -427,7 +431,7 @@ class DataclassExtractor(FieldBasedExtractor):
             concrete_args = self._infer_from_field_values(instance)
 
         return GenericInfo(
-            origin=origin, concrete_args=concrete_args, is_generic=bool(concrete_args)
+            origin=origin, concrete_args=concrete_args
         )
 
     def _infer_from_field_values(self, instance: Any) -> List[GenericInfo]:
@@ -470,14 +474,14 @@ class GenericTypeUtils:
     def get_generic_info(self, annotation: Any) -> GenericInfo:
         """Extract generic type information from an annotation."""
         if isinstance(annotation, TypeVar):
-            return GenericInfo(origin=annotation, is_generic=False)
+            return GenericInfo(origin=annotation)
 
         for extractor in self.extractors:
             if extractor.can_handle_annotation(annotation):
                 return extractor.extract_from_annotation(annotation)
 
         # Fallback for non-generic types
-        return GenericInfo(origin=annotation, is_generic=False)
+        return GenericInfo(origin=annotation)
 
     def get_instance_generic_info(self, instance: Any) -> GenericInfo:
         """Extract generic type information from an instance."""
@@ -486,7 +490,7 @@ class GenericTypeUtils:
                 return extractor.extract_from_instance(instance)
 
         # Fallback for non-generic instances
-        return GenericInfo(origin=type(instance), is_generic=False)
+        return GenericInfo(origin=type(instance))
 
     def get_type_parameters(self, annotation: Any) -> List[TypeVar]:
         """Extract TypeVar parameters from any generic annotation."""
