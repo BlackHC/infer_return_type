@@ -19,6 +19,12 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from abc import ABC, abstractmethod
 
 
+def is_union_type(origin: Any) -> bool:
+    """Check if origin represents a Union type (handles both typing.Union and types.UnionType)."""
+    union_type = getattr(types, 'UnionType', None)
+    return origin is Union or (union_type and origin is union_type)
+
+
 @dataclass(frozen=True, kw_only=True)
 class GenericInfo:
     """Container for generic type information extracted from annotations or instances.
@@ -87,10 +93,7 @@ class GenericInfo:
 
     def _is_union_origin(self) -> bool:
         """Check if origin is a Union type."""
-        return (
-            self.origin is Union 
-            or (hasattr(types, "UnionType") and self.origin is getattr(types, "UnionType"))
-        )
+        return is_union_type(self.origin)
         
     @functools.cached_property
     def resolved_concrete_args(self) -> List[Any]:

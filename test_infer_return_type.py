@@ -3,8 +3,9 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple, TypeVar, Union, Callable
 
 import pytest
-# from infer_return_type import TypeInferenceError, infer_return_type
-from unification_type_inference import TypeInferenceError, infer_return_type_unified as infer_return_type
+from infer_return_type import TypeInferenceError, infer_return_type
+# from unification_type_inference import TypeInferenceError, infer_return_type_unified as infer_return_type
+# from csp_type_inference import CSPTypeInferenceError as TypeInferenceError, infer_return_type_csp as infer_return_type
 from pydantic import BaseModel
 
 # TypeVars for testing
@@ -78,7 +79,7 @@ def test_basic_generic_classes():
 
 
 def test_single_typevar_errors():
-    """Test error scenarios with single TypeVars"""
+    """Test error scenarios and improved union behavior with single TypeVars"""
     
     def head(xs: List[A]) -> A: ...
     
@@ -90,10 +91,16 @@ def test_single_typevar_errors():
     t = infer_return_type(head, [], type_overrides={A: int})
     assert t is int
     
-    # Ambiguous same TypeVar binding should fail
-    def same(a: A, b: A) -> bool: ...
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(same, 1, 'x')
+    # Improved behavior: Conflicting TypeVar binding now creates union instead of failing
+    def identity(a: A, b: A) -> A: ...
+    t = infer_return_type(identity, 1, 'x')
+    
+    # Should return int | str union type
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
 
 
 def test_constrained_and_bounded_typevars():
