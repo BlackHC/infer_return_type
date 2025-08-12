@@ -8,35 +8,30 @@ generic type systems (built-ins, Pydantic, dataclasses).
 import pytest
 import typing
 import types
-from typing import TypeVar, List, Dict, Tuple, Union, get_origin, get_args
+from typing import Dict, List, Tuple, TypeVar, Union, get_args, get_origin
 from dataclasses import dataclass
 
 from generic_utils import (
-    GenericTypeUtils, BuiltinExtractor, PydanticExtractor, DataclassExtractor,
-    UnionExtractor, create_union_if_needed,
-    get_generic_info, get_instance_generic_info, get_type_parameters, get_concrete_args,
-    get_instance_concrete_args, get_generic_origin, is_generic_type, extract_all_typevars,
-    get_resolved_type
+    BuiltinExtractor, DataclassExtractor, GenericTypeUtils, PydanticExtractor, UnionExtractor,
+    create_union_if_needed, extract_all_typevars, get_concrete_args, get_generic_info, 
+    get_generic_origin, get_instance_concrete_args, get_instance_generic_info, 
+    get_resolved_type, get_type_parameters, is_generic_type
 )
 
-# Test fixtures
+# Test TypeVars
 A = TypeVar('A')
 B = TypeVar('B')
 T = TypeVar('T', bound=str)
 U = TypeVar('U', int, float)
 
-
 def _is_union_type(obj):
     """Helper to check if object is a Union type (handles both typing.Union and types.UnionType)."""
-    # Check if obj is Union itself (typing.Union) or a parameterized Union (Union[int, str])
     origin = get_origin(obj)
-    return _is_union_origin(origin)
-
+    return origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType'))
 
 def _is_union_origin(origin):
     """Helper to check if an origin is a Union type (either typing.Union or types.UnionType)."""
     return origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType'))
-
 
 # Pydantic test classes (conditional import for testing)
 try:
@@ -53,25 +48,24 @@ try:
 except ImportError:
     PYDANTIC_AVAILABLE = False
 
-
 # Dataclass test classes
 @dataclass
 class DataclassBox(typing.Generic[A]):
     item: A
-
 
 @dataclass 
 class DataclassPair(typing.Generic[A, B]):
     first: A
     second: B
 
-
 class TestBuiltinExtractor:
     """Test built-in generic type extraction."""
     
-    def test_list_annotation(self):
-        extractor = BuiltinExtractor()
-        
+    @pytest.fixture
+    def extractor(self):
+        return BuiltinExtractor()
+    
+    def test_list_annotation(self, extractor):
         # Non-generic list
         assert not extractor.can_handle_annotation(list)
         
@@ -89,9 +83,7 @@ class TestBuiltinExtractor:
         assert info.type_params == [A]
         assert info.is_generic
     
-    def test_dict_annotation(self):
-        extractor = BuiltinExtractor()
-        
+    def test_dict_annotation(self, extractor):
         info = extractor.extract_from_annotation(dict[str, int])
         assert info.origin is dict
         assert info.resolved_concrete_args == [str, int]
@@ -104,9 +96,7 @@ class TestBuiltinExtractor:
         assert set(info.type_params) == {A, B}
         assert info.is_generic
     
-    def test_tuple_annotation(self):
-        extractor = BuiltinExtractor()
-        
+    def test_tuple_annotation(self, extractor):
         info = extractor.extract_from_annotation(tuple[int, str, float])
         assert info.origin is tuple
         assert info.resolved_concrete_args == [int, str, float]
@@ -120,18 +110,14 @@ class TestBuiltinExtractor:
         assert info.type_params == [A]
         assert info.is_generic
     
-    def test_set_annotation(self):
-        extractor = BuiltinExtractor()
-        
+    def test_set_annotation(self, extractor):
         info = extractor.extract_from_annotation(set[int])
         assert info.origin is set
         assert info.resolved_concrete_args == [int]
         assert info.type_params == []
         assert info.is_generic
     
-    def test_legacy_typing_annotations(self):
-        extractor = BuiltinExtractor()
-        
+    def test_legacy_typing_annotations(self, extractor):
         info = extractor.extract_from_annotation(List[int])
         assert info.origin is list
         assert info.resolved_concrete_args == [int]
@@ -142,9 +128,7 @@ class TestBuiltinExtractor:
         assert info.resolved_concrete_args == [str, int]
         assert info.is_generic
     
-    def test_list_instance(self):
-        extractor = BuiltinExtractor()
-        
+    def test_list_instance(self, extractor):
         # Empty list
         info = extractor.extract_from_instance([])
         assert info.origin is list
@@ -167,9 +151,8 @@ class TestBuiltinExtractor:
         assert set(get_args(union_type)) == {int, str}
         assert info.is_generic
     
-    def test_dict_instance(self):
-        extractor = BuiltinExtractor()
-        
+    def test_dict_instance(self, extractor):
+
         # Empty dict
         info = extractor.extract_from_instance({})
         assert info.origin is dict
@@ -192,17 +175,15 @@ class TestBuiltinExtractor:
         assert set(get_args(union_type)) == {int, str}
         assert info.is_generic
     
-    def test_tuple_instance(self):
-        extractor = BuiltinExtractor()
-        
+    def test_tuple_instance(self, extractor):
+
         info = extractor.extract_from_instance((1, "hello", 3.14))
         assert info.origin is tuple
         assert info.resolved_concrete_args == [int, str, float]
         assert info.is_generic
     
-    def test_set_instance(self):
-        extractor = BuiltinExtractor()
-        
+    def test_set_instance(self, extractor):
+
         # Empty set
         info = extractor.extract_from_instance(set())
         assert info.origin is set
@@ -224,21 +205,22 @@ class TestBuiltinExtractor:
         assert set(get_args(union_type)) == {int, str}
         assert info.is_generic
 
-
 @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
 class TestPydanticExtractor:
     """Test Pydantic generic type extraction."""
     
-    def test_pydantic_annotation(self):
-        extractor = PydanticExtractor()
-        
+    @pytest.fixture
+    def extractor(self):
+        return PydanticExtractor()
+    
+    def test_pydantic_annotation(self, extractor):
         # Generic Pydantic class
         assert extractor.can_handle_annotation(PydanticBox)
         
         info = extractor.extract_from_annotation(PydanticBox)
         assert info.origin is PydanticBox
         # The unparameterized class with TypeVar parameters should be considered generic
-        assert info.is_generic == True  # Has TypeVar parameters
+        assert info.is_generic  # Has TypeVar parameters
         assert A in info.type_params
         
         # Parameterized Pydantic class
@@ -259,7 +241,7 @@ class TestPydanticExtractor:
         info = extractor.extract_from_annotation(PydanticPair)
         assert info.origin is PydanticPair
         # The unparameterized class with TypeVar parameters should be considered generic
-        assert info.is_generic == True  # Has TypeVar parameters
+        assert info.is_generic  # Has TypeVar parameters
         assert set(info.type_params) == {A, B}
     
     def test_pydantic_instance(self):
@@ -287,13 +269,14 @@ class TestPydanticExtractor:
         assert info.resolved_concrete_args == [str, int]
         assert info.is_generic
 
-
 class TestDataclassExtractor:
     """Test dataclass generic type extraction."""
     
-    def test_dataclass_annotation(self):
-        extractor = DataclassExtractor()
-        
+    @pytest.fixture
+    def extractor(self):
+        return DataclassExtractor()
+    
+    def test_dataclass_annotation(self, extractor):
         # Generic dataclass
         assert extractor.can_handle_annotation(DataclassBox)
         
@@ -345,7 +328,6 @@ class TestDataclassExtractor:
         assert len(info.concrete_args) == 1
         assert info.concrete_args[0].origin == int
         assert info.is_generic
-
 
 class TestGenericTypeUtils:
     """Test the unified interface."""
@@ -445,7 +427,6 @@ class TestGenericTypeUtils:
         typevars = utils.extract_all_typevars(list[Union[A, int]])
         assert typevars == [A]
 
-
 class TestConvenienceFunctions:
     """Test the module-level convenience functions."""
     
@@ -486,7 +467,6 @@ class TestConvenienceFunctions:
     def test_extract_all_typevars(self):
         typevars = extract_all_typevars(list[dict[A, B]])
         assert set(typevars) == {A, B}
-
 
 class TestComplexScenarios:
     """Test complex nested scenarios."""
@@ -532,7 +512,6 @@ class TestComplexScenarios:
         assert set(typevars) == {A, B}
     
     def test_bound_typevars(self):
-        # Verify that bound TypeVars are preserved
         params = get_type_parameters(list[T])
         assert params == [T]
         assert params[0].__bound__ is str
@@ -543,14 +522,12 @@ class TestComplexScenarios:
     
     def test_nested_typevar_extraction_builtin(self):
         """Test that nested TypeVars are properly extracted from built-in types."""
-        
-        # Test cases that were failing before the fix
         info = get_generic_info(list[list[A]])
-        assert info.type_params == [A], f"Expected [A], got {info.type_params}"
+        assert info.type_params == [A]
         assert info.resolved_concrete_args == [list[A]]
         
         info = get_generic_info(dict[A, list[B]])
-        assert set(info.type_params) == {A, B}, f"Expected {{A, B}}, got {set(info.type_params)}"
+        assert set(info.type_params) == {A, B}
         assert info.resolved_concrete_args == [A, list[B]]
         
         # Triple nesting
@@ -628,7 +605,6 @@ class TestComplexScenarios:
         assert info.origin is NestedContainer
         assert info.resolved_concrete_args == [str, int]
 
-
 class TestUnionExtractor:
     """Test Union type extraction."""
     
@@ -684,7 +660,6 @@ class TestUnionExtractor:
         assert info.origin is str
         assert not info.is_generic
 
-
 class TestUtilityFunctions:
     """Test utility functions."""
     
@@ -710,7 +685,6 @@ class TestUtilityFunctions:
         union_args = get_args(result)
         assert list[int] in union_args
         assert dict[str, int] in union_args
-
 
 @pytest.mark.skipif(not hasattr(types, 'UnionType'), reason="types.UnionType not available")
 class TestModernUnionTypes:
@@ -1092,7 +1066,6 @@ class TestModernUnionTypes:
         assert A in get_args(resolved)
         assert int in get_args(resolved)
 
-
 class TestEnhancedInferenceEdgeCases:
     """Test edge cases and tricky scenarios for enhanced field value inference."""
     
@@ -1431,7 +1404,6 @@ class TestEnhancedInferenceEdgeCases:
         assert inferred_type.origin is Union
         union_args = set(arg.origin for arg in inferred_type.concrete_args)
         assert union_args == {int, str}
-
 
 # if __name__ == "__main__":
 #     pytest.main([__file__, "-v"]) 
