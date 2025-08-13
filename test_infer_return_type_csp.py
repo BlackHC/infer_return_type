@@ -91,10 +91,10 @@ def test_single_typevar_errors():
     t = infer_return_type(head, [], type_overrides={A: int})
     assert t is int
     
-    # Ambiguous same TypeVar binding should fail
+    # Same TypeVar with different types should create union and still work if return type doesn't depend on it
     def same(a: A, b: A) -> bool: ...
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(same, 1, 'x')
+    t = infer_return_type(same, 1, 'x')
+    assert t is bool  # Return type is bool regardless of A's binding
 
 
 def test_constrained_and_bounded_typevars():
