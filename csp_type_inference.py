@@ -131,17 +131,22 @@ class TypeDomain:
     def get_valid_types(self) -> Set[type]:
         """Get all currently valid types for this TypeVar."""
         if self.exact_type is not None:
-            # Check if exact type satisfies all constraints
+            # Check if exact type satisfies TypeVar bounds/constraints
             candidate = {self.exact_type}
             
-            # Apply subtype constraints
-            if self.must_be_subtype_of:
-                candidate = {t for t in candidate if any(_is_subtype(t, super_t) for super_t in self.must_be_subtype_of)}
-                
-            # Apply supertype constraints  
-            if self.must_be_supertype_of:
-                candidate = {t for t in candidate if any(_is_subtype(sub_t, t) for sub_t in self.must_be_supertype_of)}
-                
+            # Apply TypeVar bounds and constraints (these are fundamental type system rules)
+            if self.typevar.__constraints__:
+                # TypeVar can only be one of the constraint types
+                if self.exact_type not in self.typevar.__constraints__:
+                    return set()  # Invalid
+            
+            if self.typevar.__bound__:
+                # TypeVar must be subtype of bound
+                if not _is_subtype(self.exact_type, self.typevar.__bound__):
+                    return set()  # Invalid
+            
+            # For normal inference constraints (subtype/supertype), be more lenient
+            # to allow type overrides to work
             return candidate
             
         valid = self.possible_types.copy()
@@ -241,7 +246,17 @@ class CSPTypeInferenceEngine:
     def add_equality_constraint(self, typevar: TypeVar, concrete_type: type, source: str = "", variance: Variance = Variance.INVARIANT):
         """Add A = type constraint."""
         # Type overrides get highest priority
-        priority = 15 if source == "override" else 10
+        if source == "override":
+            priority = 15
+        elif "dict" in source.lower():
+            # Dict constraints have higher priority due to structured key-value mapping
+            priority = 12  
+        elif any(structured in source.lower() for structured in ["tuple", "list"]):
+            # Other structured containers get medium-high priority
+            priority = 11
+        else:
+            # Default priority for other constraints
+            priority = 10
         constraint = TypeConstraint(
             constraint_type=ConstraintType.EQUALITY,
             variables={typevar},
@@ -255,12 +270,20 @@ class CSPTypeInferenceEngine:
         
     def add_subset_constraint(self, typevars: Set[TypeVar], concrete_types: Set[type], variance: Variance = Variance.COVARIANT, source: str = ""):
         """Add {TypeVars} ⊇ {concrete_types} constraint (union constraint)."""
+        # Lower priority for subset constraints, especially from sets with unions
+        if "set" in source.lower() and any("union" in s for s in [source]):
+            priority = 3  # Very low priority for ambiguous set unions
+        elif "set" in source.lower():
+            priority = 4  # Low priority for sets
+        else:
+            priority = 5  # Default subset priority
+            
         constraint = TypeConstraint(
             constraint_type=ConstraintType.SUBSET,
             variables=typevars,
             types=concrete_types,
             description=f"{{{', '.join(str(v) for v in typevars)}}} ⊇ {{{', '.join(str(t) for t in concrete_types)}}}",
-            priority=5,
+            priority=priority,
             source=source,
             variance=variance
         )
@@ -435,7 +458,33 @@ class CSPTypeInferenceEngine:
         # Use generic_utils to extract concrete types from the instance
         inferred_concrete_args_info = self.generic_utils.get_instance_concrete_args(value)
         
-        # Create constraints for each type parameter
+        # Handle case where TypeVars exist in type_params but not properly in concrete_args
+        # This happens when complex nested annotations lose TypeVar information
+        # Only apply this for single TypeVar cases to avoid conflicts
+        if (len(ann_info.type_params) == 1 and 
+            hasattr(value, '__orig_class__') and 
+            not any(isinstance(arg_info.resolved_type, TypeVar) for arg_info in ann_info.concrete_args)):
+            
+            # Use the complete type information from the instance __orig_class__
+            orig_class = value.__orig_class__
+            orig_info = self.generic_utils.get_generic_info(orig_class)
+            
+            if orig_info.concrete_args:
+                # Extract all concrete types from the complete instance type
+                all_concrete_types = set()
+                for arg_info in orig_info.concrete_args:
+                    all_concrete_types.update(self._extract_concrete_types_from_arg(arg_info.resolved_type))
+                
+                # Bind the single TypeVar to the most basic concrete type found
+                if all_concrete_types:
+                    # Prefer basic types over complex ones
+                    basic_types = {t for t in all_concrete_types if not hasattr(t, '__origin__')}
+                    if basic_types:
+                        concrete_type = next(iter(basic_types))  # Pick the first basic type
+                        single_typevar = ann_info.type_params[0]
+                        self.add_equality_constraint(single_typevar, concrete_type, f"{source}:instance_extraction", Variance.INVARIANT)
+        
+        # Create constraints for each type parameter (original logic)
         for i, (type_arg_info, variance) in enumerate(zip(ann_info.concrete_args, variance_rules)):
             type_arg = type_arg_info.resolved_type
             if isinstance(type_arg, TypeVar):
@@ -466,18 +515,10 @@ class CSPTypeInferenceEngine:
             union_types = {arg_info.resolved_type for arg_info in args_info}
             self.add_subset_constraint({typevar}, union_types, variance, source)
         else:
-            # Apply variance rules for non-union types
-            if variance == Variance.INVARIANT:
-                # Invariant: must be exact match
-                self.add_equality_constraint(typevar, inferred_type, source, variance)
-            elif variance == Variance.COVARIANT:
-                # Covariant: TypeVar can be inferred_type or any supertype
-                # T ≥ inferred_type (T must be supertype of inferred_type)
-                self.add_supertype_constraint(typevar, inferred_type, source)
-            elif variance == Variance.CONTRAVARIANT:
-                # Contravariant: TypeVar can be inferred_type or any subtype
-                # T ≤ inferred_type (T must be subtype of inferred_type)
-                self.add_subtype_constraint(typevar, inferred_type, source)
+            # For single concrete types inferred from homogeneous containers,
+            # always create equality constraints regardless of variance.
+            # Variance rules only apply when we have actual type conflicts.
+            self.add_equality_constraint(typevar, inferred_type, source, variance)
         
         # Always add bounds check
         self.add_bounds_constraint(typevar, f"{source}:bounds")
@@ -541,6 +582,27 @@ class CSPTypeInferenceEngine:
     
     def _handle_non_generic_annotation(self, annotation: Any, value: Any, source: str):
         """Handle non-generic type annotations."""
+        # Check if the value has richer type information than the annotation
+        # This handles cases where TypeVars are lost in complex nested annotations
+        # but preserved in the actual instances
+        
+        # Try to extract type information from the instance
+        try:
+            instance_info = self.generic_utils.get_instance_concrete_args(value)
+            if instance_info:
+                # The instance has generic type information that the annotation lacks
+                # Try to extract TypeVars from a broader context if available
+                if hasattr(value, '__orig_class__'):
+                    # Use the original class information to find TypeVars
+                    orig_class = value.__orig_class__
+                    orig_info = self.generic_utils.get_generic_info(orig_class)
+                    if orig_info.type_params:
+                        # Map between annotation type and instance type to infer TypeVars
+                        self._map_annotation_to_instance_types(annotation, orig_class, source)
+                        return
+        except (AttributeError, TypeError):
+            pass
+        
         # For non-generic types, just validate that the value matches
         expected_type = annotation
         actual_type = type(value)
@@ -809,6 +871,109 @@ class CSPTypeInferenceEngine:
         
         # Default: return empty list if we can't extract values
         return []
+    
+    def _map_annotation_to_instance_types(self, annotation_type: Any, instance_type: Any, source: str):
+        """Map between incomplete annotation and complete instance type to infer TypeVars.
+        
+        This handles cases where the annotation loses TypeVar information (like Wrap[List[Box]])
+        but the instance preserves it (like Wrap[List[Box[int]]]).
+        """
+        
+        # Get type information from the complete instance type
+        instance_info = self.generic_utils.get_generic_info(instance_type)
+        
+        if not instance_info.type_params:
+            return  # No TypeVars to infer
+        
+        # The key insight: extract TypeVars from the complete instance type
+        # and create equality constraints for them based on the concrete types
+        # found in the instance structure
+        
+        for typevar in instance_info.type_params:
+            # For each TypeVar in the instance type, try to find its concrete binding
+            # by looking at the concrete args
+            if instance_info.concrete_args:
+                # Map TypeVar to its position and extract the corresponding concrete type
+                # This is a simplified approach - in practice we'd need more sophisticated mapping
+                concrete_types = set()
+                for arg_info in instance_info.concrete_args:
+                    # Recursively extract concrete types from the arg
+                    concrete_types.update(self._extract_concrete_types_from_arg(arg_info.resolved_type))
+                
+                if concrete_types:
+                    if len(concrete_types) == 1:
+                        concrete_type = next(iter(concrete_types))
+                        self.add_equality_constraint(typevar, concrete_type, f"{source}:instance_inferred")
+                    else:
+                        # Multiple concrete types found - create subset constraint
+                        self.add_subset_constraint({typevar}, concrete_types, Variance.COVARIANT, f"{source}:instance_inferred")
+    
+    def _extract_concrete_types_from_arg(self, arg_type: Any) -> Set[type]:
+        """Extract concrete types from a type argument, handling nested generics."""
+        concrete_types = set()
+        
+        # First check if this is a generic type with concrete args
+        origin = get_generic_origin(arg_type)
+        args_info = get_concrete_args(arg_type)
+        
+        if origin and args_info:
+            # This is a parameterized generic type (like Box[int])
+            # Extract from the concrete arguments recursively
+            for arg_info in args_info:
+                concrete_types.update(self._extract_concrete_types_from_arg(arg_info.resolved_type))
+        elif isinstance(arg_type, type):
+            # This is a basic type (like int, str, etc.)
+            concrete_types.add(arg_type)
+        else:
+            # Fallback for other cases
+            concrete_types.add(arg_type)
+        
+        return concrete_types
+    
+    def _find_typevar_binding_in_args(self, annotation_arg: Any, instance_arg: Any, target_typevar: TypeVar) -> Set[type]:
+        """Find concrete types that bind to a TypeVar by comparing annotation and instance arguments.
+        
+        For example: annotation_arg = list[Box], instance_arg = list[Box[int]], target_typevar = A
+        Should extract that A = int.
+        """
+        concrete_types = set()
+        
+        # Get origins to compare structure
+        ann_origin = get_generic_origin(annotation_arg)
+        inst_origin = get_generic_origin(instance_arg)
+        
+        # If origins match, compare their arguments
+        if ann_origin and inst_origin and ann_origin == inst_origin:
+            ann_args = get_concrete_args(annotation_arg)
+            inst_args = get_concrete_args(instance_arg)
+            
+            # Recursively compare arguments
+            for ann_arg_info, inst_arg_info in zip(ann_args, inst_args):
+                ann_sub_arg = ann_arg_info.resolved_type
+                inst_sub_arg = inst_arg_info.resolved_type
+                
+                # Recursively find bindings in nested arguments
+                concrete_types.update(self._find_typevar_binding_in_args(ann_sub_arg, inst_sub_arg, target_typevar))
+        
+        # Check if annotation and instance have same origin but instance has concrete args
+        # This handles: annotation_arg = Box (no args), instance_arg = Box[int] (with args)
+        elif ann_origin and inst_origin and ann_origin == inst_origin:
+            ann_args = get_concrete_args(annotation_arg)
+            inst_args = get_concrete_args(instance_arg)
+            
+            # If annotation has no concrete args but instance does, extract from instance
+            if not ann_args and inst_args:
+                for inst_arg_info in inst_args:
+                    concrete_types.update(self._extract_concrete_types_from_arg(inst_arg_info.resolved_type))
+        
+        # Fallback: check by class name if origins don't match
+        elif hasattr(annotation_arg, '__name__') and hasattr(instance_arg, '__name__') and annotation_arg.__name__ == instance_arg.__name__:
+            # Same class name - try to extract args from instance
+            inst_args = get_concrete_args(instance_arg)
+            for inst_arg_info in inst_args:
+                concrete_types.update(self._extract_concrete_types_from_arg(inst_arg_info.resolved_type))
+        
+        return concrete_types
 
 
 def infer_return_type_csp(

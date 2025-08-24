@@ -532,18 +532,21 @@ class GenericTypeUtils:
 
 
 def create_union_if_needed(types_set: set) -> Any:
-    """Create a Union type if needed, or return single type."""
+    """Create a Union type if needed, or return single type.
+    
+    Uses modern union syntax (int | str) for Python 3.10+ compatibility.
+    """
     if len(types_set) == 1:
         return list(types_set)[0]
     elif len(types_set) > 1:
         try:
-            # Try modern union syntax
+            # Use modern union syntax for better readability and performance
             result = types_set.pop()
             for elem_type in types_set:
                 result = result | elem_type
             return result
         except TypeError:
-            # Fallback to typing.Union
+            # Fallback to typing.Union for edge cases where | operator doesn't work
             return Union[tuple(types_set)]
     else:
         return type(None)

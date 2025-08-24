@@ -205,7 +205,7 @@ def test_multi_typevar_error_scenarios():
     # Should return int | str union type
     import types
     origin = typing.get_origin(t)
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
     
@@ -378,7 +378,7 @@ def test_complex_union_scenarios():
     # Handle both typing.Union and types.UnionType (Python 3.10+)
     import types
     union_origin = typing.get_origin(t)
-    assert union_origin is Union or union_origin is getattr(types, 'UnionType', None)
+    assert union_origin is types.UnionType
     
     union_args = typing.get_args(t)
     assert str in union_args
@@ -569,7 +569,7 @@ def test_mixed_type_container_behavior():
     # Should be int | str | float (union type)
     import types
     origin = typing.get_origin(t)
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str, float}
@@ -581,7 +581,7 @@ def test_mixed_type_container_behavior():
     t = infer_return_type(process_mixed_dict_values, mixed_dict)
     
     origin = typing.get_origin(t)
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
@@ -796,7 +796,7 @@ def test_nested_unions_in_generics():
     # Should return Union[int, str] or int | str
     import types
     origin = typing.get_origin(t)
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
@@ -823,7 +823,7 @@ def test_homogeneous_containers_vs_mixed_containers():
     t = infer_return_type(process_list, [1, "hello", 3.14])
     origin = typing.get_origin(t)
     import types
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     
     # Nested mixed containers with same TypeVar - improved engine now handles this
     def process_nested_mixed(data: List[List[A]]) -> A: ...
@@ -831,7 +831,7 @@ def test_homogeneous_containers_vs_mixed_containers():
     # The improved engine creates union from mixed nested types instead of failing
     t = infer_return_type(process_nested_mixed, [[1, 2], ["a", "b"]])
     origin = typing.get_origin(t)
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
 
@@ -860,7 +860,7 @@ def test_typevar_in_key_and_value_positions():
         # If it works, verify it's a union type
         origin = typing.get_origin(t)
         import types
-        assert origin is Union or origin is getattr(types, 'UnionType', None)
+        assert origin is types.UnionType
         union_args = typing.get_args(t)
         assert set(union_args) == {int, str}
     except TypeInferenceError:
@@ -885,7 +885,7 @@ def test_typevar_with_none_values():
     # Should infer A = int | None
     origin = typing.get_origin(t)
     import types
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert int in union_args
     assert type(None) in union_args
@@ -897,7 +897,7 @@ def test_typevar_with_none_values():
     t = infer_return_type(process_nested_with_none, [[1, 2], [None, None]])
     # Should be int | None union
     origin = typing.get_origin(t)
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert int in union_args
     assert type(None) in union_args
@@ -920,7 +920,7 @@ def test_empty_vs_non_empty_container_combinations():
     t = infer_return_type(process_multiple_lists, [], [1, 2], ["a", "b"])
     origin = typing.get_origin(t)
     import types
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
 
@@ -945,7 +945,7 @@ def test_deeply_nested_with_different_branching():
     # Creates union from different branch types
     origin = typing.get_origin(t)
     import types
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
 
@@ -966,7 +966,7 @@ def test_typevar_inference_with_subtyping():
     # Should infer union of bool and int
     origin = typing.get_origin(t)
     import types
-    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    assert origin is types.UnionType
     union_args = typing.get_args(t)
     assert bool in union_args and int in union_args
 
