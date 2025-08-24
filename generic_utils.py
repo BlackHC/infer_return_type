@@ -1,11 +1,12 @@
 """
-Unified utilities for extracting type information from generic annotations and instances.
+Utilities for extracting type information from generic annotations and instances.
 
-This module provides a consistent interface for working with generic types across
-different systems (built-in generics, Pydantic models, dataclasses).
+This module provides structural extraction of generic type information, offering
+a consistent interface for working with generic types across different systems
+(built-in generics, Pydantic models, dataclasses).
 
 Key concepts:
-- concrete_args: The actual type arguments as GenericInfo objects
+- concrete_args: The actual type arguments as GenericInfo objects  
 - type_params: TypeVars extracted from the concrete arguments
 - origin: The base generic type (e.g., list for list[int])
 - resolved_type: The fully materialized type
@@ -15,7 +16,7 @@ import functools
 import typing
 import types
 from typing import Any, Dict, Iterable, List, Set, TypeVar, Tuple, Union, get_args, get_origin
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from abc import ABC, abstractmethod
 
 
@@ -137,104 +138,6 @@ class GenericExtractor(ABC):
         """Extract generic information from an instance."""
 
 
-class FieldBasedExtractor(GenericExtractor):
-    """Base class for extractors that can infer types from field values."""
-
-    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
-        """Get the original TypeVar parameters from a class definition."""
-        for base in getattr(dataclass_class, "__orig_bases__", []):
-            if hasattr(base, "__origin__") and hasattr(base, "__args__"):
-                origin = get_origin(base)
-                if origin and hasattr(origin, "__name__") and "Generic" in str(origin):
-                    args = get_args(base)
-                    return [arg for arg in args if isinstance(arg, TypeVar)]
-        return []
-
-    def _map_typevars_to_inferred_types(
-        self, type_params: List[TypeVar], field_annotations: Dict[str, Any], field_values: Dict[str, Any]
-    ) -> List[GenericInfo]:
-        """Map TypeVars to inferred types based on field values."""
-        typevar_to_types: Dict[TypeVar, Set[Any]] = {tv: set() for tv in type_params}
-        
-        # Analyze each field
-        for field_name, field_annotation in field_annotations.items():
-            if field_name in field_values:
-                field_value = field_values[field_name]
-                self._extract_typevar_bindings(field_annotation, field_value, typevar_to_types)
-        
-        # Convert to GenericInfo objects in the same order as type_params
-        concrete_args = []
-        for type_param in type_params:
-            inferred_types = typevar_to_types.get(type_param, set())
-            if inferred_types:
-                if len(inferred_types) == 1:
-                    inferred_type = next(iter(inferred_types))
-                    concrete_args.append(GenericInfo(origin=inferred_type))
-                else:
-                    # Multiple types, create union
-                    union_info = GenericInfo.make_union_if_needed([
-                        GenericInfo(origin=t) for t in inferred_types
-                    ])
-                    concrete_args.append(union_info)
-            else:
-                # No type inferred, use the TypeVar itself
-                concrete_args.append(GenericInfo(origin=type_param))
-        
-        return concrete_args
-
-    def _extract_typevar_bindings(self, annotation: Any, value: Any, typevar_to_types: Dict[TypeVar, Set[Any]]):
-        """Extract TypeVar bindings from a field annotation and its corresponding value."""
-        if isinstance(annotation, TypeVar):
-            value_type = type(value)
-            typevar_to_types[annotation].add(value_type)
-        else:
-            runtime_info = get_instance_generic_info(value)
-            self._unify_annotation_with_runtime(annotation, runtime_info, typevar_to_types)
-
-    def _unify_annotation_with_runtime(self, annotation: Any, runtime_info: Any, typevar_to_types: Dict[TypeVar, Set[Any]]):
-        """Unify an annotation structure with runtime type information to extract TypeVar bindings."""
-        ann_origin = get_origin(annotation) or annotation
-        ann_args = get_args(annotation)
-        
-        if isinstance(annotation, TypeVar):
-            if runtime_info.is_generic and runtime_info.resolved_type:
-                typevar_to_types[annotation].add(runtime_info.resolved_type)
-            else:
-                typevar_to_types[annotation].add(runtime_info.origin)
-        elif ann_origin == runtime_info.origin:
-            # Same container type, unify arguments
-            if ann_args and runtime_info.concrete_args:
-                min_args = min(len(ann_args), len(runtime_info.concrete_args))
-                for i in range(min_args):
-                    ann_arg = ann_args[i]
-                    runtime_arg = runtime_info.concrete_args[i]
-                    
-                    if isinstance(ann_arg, TypeVar):
-                        self._bind_typevar_to_runtime(ann_arg, runtime_arg, typevar_to_types)
-                    elif hasattr(ann_arg, "__origin__") or hasattr(ann_arg, "__args__"):
-                        # Nested structure, recurse
-                        self._unify_annotation_with_runtime(ann_arg, runtime_arg, typevar_to_types)
-        elif ann_args and not runtime_info.is_generic:
-            # Annotation is generic but runtime isn't
-            for ann_arg in ann_args:
-                if isinstance(ann_arg, TypeVar):
-                    typevar_to_types[ann_arg].add(runtime_info.origin)
-
-    def _bind_typevar_to_runtime(self, typevar: TypeVar, runtime_arg: GenericInfo, typevar_to_types: Dict[TypeVar, Set[Any]]):
-        """Bind a TypeVar to a runtime type argument."""
-        if runtime_arg.origin is Union and runtime_arg.concrete_args:
-            # If runtime type is a Union, add all member types individually
-            for union_member in runtime_arg.concrete_args:
-                if union_member.is_generic and union_member.resolved_type:
-                    typevar_to_types[typevar].add(union_member.resolved_type)
-                else:
-                    typevar_to_types[typevar].add(union_member.origin)
-        elif runtime_arg.is_generic and runtime_arg.resolved_type:
-            typevar_to_types[typevar].add(runtime_arg.resolved_type)
-        else:
-            typevar_to_types[typevar].add(runtime_arg.origin)
-
-
 class BuiltinExtractor(GenericExtractor):
     """Extractor for built-in generic types like list, dict, tuple, set."""
 
@@ -251,6 +154,7 @@ class BuiltinExtractor(GenericExtractor):
         return isinstance(instance, (list, dict, tuple, set))
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
+        """Extract generic information from a built-in type annotation."""
         origin = get_origin(annotation)
         args = get_args(annotation)
 
@@ -261,34 +165,11 @@ class BuiltinExtractor(GenericExtractor):
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
-        origin = type(instance)
-        concrete_args = self._infer_args_from_content(instance)
-
-        return GenericInfo(
-            origin=origin, concrete_args=concrete_args
-        )
-
-    def _infer_args_from_content(self, instance: Any) -> List[GenericInfo]:
-        """Infer type arguments from instance content."""
-        if isinstance(instance, list) and instance:
-            element_types = {get_instance_generic_info(item) for item in instance}
-            return [GenericInfo.make_union_if_needed(element_types)]
-        elif isinstance(instance, dict) and instance:
-            key_types = {get_instance_generic_info(k) for k in instance.keys()}
-            value_types = {get_instance_generic_info(v) for v in instance.values()}
-            return [
-                GenericInfo.make_union_if_needed(key_types), 
-                GenericInfo.make_union_if_needed(value_types)
-            ]
-        elif isinstance(instance, tuple) and instance:
-            return [get_instance_generic_info(item) for item in instance]
-        elif isinstance(instance, set) and instance:
-            element_types = {get_instance_generic_info(item) for item in instance}
-            return [GenericInfo.make_union_if_needed(element_types)]
-        return []
+        """Extract generic information from a built-in type instance."""
+        return GenericInfo(origin=type(instance))
 
 
-class PydanticExtractor(FieldBasedExtractor):
+class PydanticExtractor(GenericExtractor):
     """Extractor for Pydantic generic models."""
 
     def can_handle_annotation(self, annotation: Any) -> bool:
@@ -298,6 +179,7 @@ class PydanticExtractor(FieldBasedExtractor):
         return hasattr(instance, "__pydantic_generic_metadata__")
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
+        """Extract generic information from a Pydantic type annotation."""
         if not hasattr(annotation, "__pydantic_generic_metadata__"):
             return GenericInfo()
 
@@ -309,6 +191,7 @@ class PydanticExtractor(FieldBasedExtractor):
             args = metadata.get("args", ())
             concrete_args = [get_generic_info(arg) for arg in args]
         else:
+            # Unparameterized base class - extract TypeVars from class definition
             origin = annotation
             original_type_params = self._get_original_type_parameters(annotation)
             concrete_args = [
@@ -321,6 +204,7 @@ class PydanticExtractor(FieldBasedExtractor):
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
+        """Extract generic information from a Pydantic model instance."""
         if not hasattr(instance, "__pydantic_generic_metadata__"):
             return GenericInfo()
 
@@ -333,41 +217,23 @@ class PydanticExtractor(FieldBasedExtractor):
             args = metadata.get("args", ())
             concrete_args = [get_generic_info(arg) for arg in args]
         else:
-            # Unparameterized base class (e.g., PydanticBox)
+            # Unparameterized base class
             origin = instance_class
-            concrete_args = self._infer_from_field_values(instance)
+            concrete_args = []
 
         return GenericInfo(
             origin=origin, concrete_args=concrete_args
         )
 
-    def _infer_from_field_values(self, instance: Any) -> List[GenericInfo]:
-        """Infer concrete type arguments from actual field values in a Pydantic instance."""
-        try:
-            original_type_params = self._get_original_type_parameters(type(instance))
-            if not original_type_params:
-                return []
-            
-            field_annotations = self._get_field_annotations(type(instance))
-            if not field_annotations:
-                return []
-            
-            field_values = {
-                field_name: getattr(instance, field_name)
-                for field_name in field_annotations.keys()
-                if hasattr(instance, field_name)
-            }
-            
-            return self._map_typevars_to_inferred_types(
-                original_type_params, field_annotations, field_values
-            )
-            
-        except (AttributeError, KeyError, TypeError):
-            return []
-
-    def _get_field_annotations(self, pydantic_class: Any) -> Dict[str, Any]:
-        """Get field annotations from a Pydantic model."""
-        return getattr(pydantic_class, "__annotations__", {})
+    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
+        """Get the original TypeVar parameters from a class definition."""
+        for base in getattr(dataclass_class, "__orig_bases__", []):
+            if hasattr(base, "__origin__") and hasattr(base, "__args__"):
+                origin = get_origin(base)
+                if origin and hasattr(origin, "__name__") and "Generic" in str(origin):
+                    args = get_args(base)
+                    return [arg for arg in args if isinstance(arg, TypeVar)]
+        return []
 
 
 class UnionExtractor(GenericExtractor):
@@ -397,7 +263,7 @@ class UnionExtractor(GenericExtractor):
         return GenericInfo(origin=type(instance))
 
 
-class DataclassExtractor(FieldBasedExtractor):
+class DataclassExtractor(GenericExtractor):
     """Extractor for dataclass generic types."""
 
     def can_handle_annotation(self, annotation: Any) -> bool:
@@ -408,6 +274,7 @@ class DataclassExtractor(FieldBasedExtractor):
         return is_dataclass(instance)
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
+        """Extract generic information from a dataclass type annotation."""
         origin = get_origin(annotation) or annotation
         args = get_args(annotation)
 
@@ -421,6 +288,7 @@ class DataclassExtractor(FieldBasedExtractor):
         )
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
+        """Extract generic information from a dataclass instance."""
         if not is_dataclass(instance):
             return GenericInfo()
 
@@ -431,36 +299,22 @@ class DataclassExtractor(FieldBasedExtractor):
             args = get_args(instance.__orig_class__)
             concrete_args = [get_generic_info(arg) for arg in args]
         else:
-            concrete_args = self._infer_from_field_values(instance)
+            # Use the class type without type arguments
+            concrete_args = []
 
         return GenericInfo(
             origin=origin, concrete_args=concrete_args
         )
 
-    def _infer_from_field_values(self, instance: Any) -> List[GenericInfo]:
-        """Infer concrete type arguments from actual field values in a dataclass instance."""
-        try:
-            original_type_params = self._get_original_type_parameters(type(instance))
-            if not original_type_params:
-                return []
-            
-            dataclass_fields = fields(instance)
-            if not dataclass_fields:
-                return []
-            
-            field_annotations = {field_info.name: field_info.type for field_info in dataclass_fields}
-            field_values = {
-                field_name: getattr(instance, field_name)
-                for field_name in field_annotations.keys()
-                if hasattr(instance, field_name)
-            }
-            
-            return self._map_typevars_to_inferred_types(
-                original_type_params, field_annotations, field_values
-            )
-            
-        except (AttributeError, KeyError, TypeError):
-            return []
+    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
+        """Get the original TypeVar parameters from a class definition."""
+        for base in getattr(dataclass_class, "__orig_bases__", []):
+            if hasattr(base, "__origin__") and hasattr(base, "__args__"):
+                origin = get_origin(base)
+                if origin and hasattr(origin, "__name__") and "Generic" in str(origin):
+                    args = get_args(base)
+                    return [arg for arg in args if isinstance(arg, TypeVar)]
+        return []
 
 
 class GenericTypeUtils:
