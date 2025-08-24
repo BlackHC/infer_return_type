@@ -2,7 +2,7 @@
 
 from csp_type_inference import infer_return_type_csp
 from generic_utils import get_instance_concrete_args
-from typing import TypeVar, List, Dict, Set
+from typing import TypeVar, List, Dict, Set, Tuple
 
 A = TypeVar('A')
 B = TypeVar('B')
@@ -41,6 +41,38 @@ def test_generic_utils_integration():
     def set_example(data: Set[A]) -> A: pass
     result = infer_return_type_csp(set_example, mixed_set)
     print(f"Set[A] with mixed types: {result}")
+    
+    print("\n" + "="*60)
+    print("VARIANCE BEHAVIOR DEMONSTRATION")
+    print("="*60)
+    
+    # Show variance in action
+    print("\nCovariant (List): Creates unions for mixed types")
+    print("Invariant (Dict keys): Requires exact type match")
+    print("Contravariant (Callable): Would allow subtypes (when supported)")
+
+def test_variance_demonstration():
+    """Demonstrate variance behavior with simple examples."""
+    print("\n=== Variance Behavior Examples ===")
+    
+    # Covariant example
+    def covariant_example(items: List[A]) -> A: pass
+    result = infer_return_type_csp(covariant_example, [1, 'hello'])
+    print(f"List[A] (covariant) with [1, 'hello']: {result}")
+    print("  → Creates union because List is covariant in its element type")
+    
+    # Invariant example
+    def invariant_example(mapping: Dict[A, B]) -> A: pass
+    result = infer_return_type_csp(invariant_example, {'key': 42})
+    print(f"Dict[A, B] keys (invariant) with {{'key': 42}}: {result}")
+    print("  → Exact type match because Dict keys are invariant")
+    
+    # Mixed variance example
+    def mixed_example(data: Dict[A, List[B]]) -> Tuple[A, B]: pass
+    result = infer_return_type_csp(mixed_example, {'key': [1, 'hello']})
+    print(f"Dict[A, List[B]] mixed variance: {result}")
+    print("  → A is exact (invariant), B is union (covariant)")
 
 if __name__ == "__main__":
-    test_generic_utils_integration() 
+    test_generic_utils_integration()
+    test_variance_demonstration() 

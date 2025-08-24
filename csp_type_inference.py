@@ -14,7 +14,7 @@ in the domain of types rather than boolean variables.
 
 import inspect
 import types
-from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -55,7 +55,7 @@ VARIANCE_MAP = {
     Tuple: [Variance.COVARIANT],                   # Note: fixed tuples are more complex
     set: [Variance.COVARIANT],                     # Set[T] - covariant in T
     Set: [Variance.COVARIANT],
-    # typing.Callable: [Variance.CONTRAVARIANT, Variance.COVARIANT], # Callable[[T], R] - contravariant in T, covariant in R
+    Callable: [Variance.CONTRAVARIANT, Variance.COVARIANT], # Callable[[T], R] - contravariant in T, covariant in R
 }
 
 
@@ -175,7 +175,35 @@ class TypeDomain:
         if len(valid) == 1:
             return next(iter(valid))
         
-        # Multiple valid types - create union
+        # Multiple valid types - prefer the most specific one for practical inference
+        # For supertype constraints (covariant), prefer the observed type over its supertypes
+        if self.must_be_supertype_of:
+            # Find the most specific type that satisfies all supertype constraints
+            observed_types = self.must_be_supertype_of
+            for observed_type in observed_types:
+                if observed_type in valid:
+                    # The observed type itself is valid and most specific
+                    return observed_type
+        
+        # For subtype constraints (contravariant), prefer the observed type as well
+        if self.must_be_subtype_of:
+            # Try to find a specific type rather than the most general supertype
+            observed_supertypes = self.must_be_subtype_of
+            # Look for the most specific type that is still a subtype
+            for candidate in sorted(valid, key=lambda t: len(t.__mro__) if hasattr(t, '__mro__') else 0, reverse=True):
+                if all(_is_subtype(candidate, supertype) for supertype in observed_supertypes):
+                    return candidate
+        
+        # Fallback: if no clear most specific type, create union
+        # But first try to find a single type that makes sense
+        
+        # Remove object if there are more specific types
+        if object in valid and len(valid) > 1:
+            specific_types = valid - {object}
+            if len(specific_types) == 1:
+                return next(iter(specific_types))
+        
+        # Create union of remaining types
         return create_union_if_needed(valid)
 
 
@@ -348,13 +376,13 @@ class CSPTypeInferenceEngine:
                 else:
                     # Check if alternative can handle the value
                     alt_origin = get_generic_origin(alternative)
-                    if alt_origin == get_generic_origin(type(value)) or alt_origin == type(value):
+                    if alt_origin is get_generic_origin(type(value)) or alt_origin is type(value):
                         # Origins match - this is a good candidate
                         score = 10  # Higher score for structured matches
                         if score > best_score:
                             best_score = score
                             best_match = alternative
-                    elif alt_origin is None and alternative == type(value):
+                    elif alt_origin is None and alternative is type(value):
                         # Direct type match
                         score = 5
                         if score > best_score:
@@ -443,11 +471,13 @@ class CSPTypeInferenceEngine:
                 # Invariant: must be exact match
                 self.add_equality_constraint(typevar, inferred_type, source, variance)
             elif variance == Variance.COVARIANT:
-                # Covariant: TypeVar can be the inferred type
-                self.add_equality_constraint(typevar, inferred_type, source, variance)
-            elif variance == Variance.CONTRAVARIANT:
-                # Contravariant: TypeVar must be supertype of inferred type
+                # Covariant: TypeVar can be inferred_type or any supertype
+                # T ≥ inferred_type (T must be supertype of inferred_type)
                 self.add_supertype_constraint(typevar, inferred_type, source)
+            elif variance == Variance.CONTRAVARIANT:
+                # Contravariant: TypeVar can be inferred_type or any subtype
+                # T ≤ inferred_type (T must be subtype of inferred_type)
+                self.add_subtype_constraint(typevar, inferred_type, source)
         
         # Always add bounds check
         self.add_bounds_constraint(typevar, f"{source}:bounds")
@@ -499,6 +529,8 @@ class CSPTypeInferenceEngine:
             return isinstance(value, tuple)
         elif origin in (set, Set):
             return isinstance(value, set)
+        elif origin is Callable:
+            return callable(value)
         else:
             # For custom types, check if value is instance of origin
             try:
@@ -640,7 +672,19 @@ class CSPTypeInferenceEngine:
             # A ≥ SubType (contravariant)
             typevar = next(iter(constraint.variables))
             subtype = next(iter(constraint.types))
-            self.domains[typevar].add_supertype_constraint(subtype)
+            domain = self.domains[typevar]
+            domain.add_supertype_constraint(subtype)
+            
+            # For covariant constraints, also add the observed type and some common supertypes
+            # This gives the domain a base set of types to work with
+            domain.add_possible_type(subtype)  # The observed type itself
+            domain.add_possible_type(object)   # Universal supertype
+            
+            # Add some common supertypes for built-in types
+            if subtype is int:
+                domain.add_possible_type(float)  # int can be considered as float in some contexts
+            elif subtype in (int, float):
+                domain.add_possible_type(object)  # numbers are objects
             
         elif constraint.constraint_type == ConstraintType.BOUNDS_CHECK:
             # Check TypeVar bounds and constraints
@@ -757,6 +801,11 @@ class CSPTypeInferenceEngine:
             if position == 0:
                 # Elements of the set
                 return list(instance)
+        elif container_origin is Callable:
+            # For Callable types, we can't extract types from callable instances at runtime
+            # without inspecting the function signature. This is a limitation of runtime type extraction.
+            # Return empty list to avoid creating constraints for now.
+            return []
         
         # Default: return empty list if we can't extract values
         return []

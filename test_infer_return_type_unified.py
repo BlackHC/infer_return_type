@@ -923,6 +923,18 @@ def test_empty_vs_non_empty_container_combinations():
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
     assert set(union_args) == {int, str}
+    
+    
+def test_multiple_nested_typevars():
+    
+    class PydanticModel(BaseModel, typing.Generic[A, B]):
+        a: A
+        b: B
+    
+    def process_pydantic_model(data: PydanticModel[A, list[B]]) -> B: ...
+
+    t = infer_return_type(process_pydantic_model, PydanticModel[int, list[str]](a=1, b=["hello", "world"]))
+    assert t.resolved_type is str
 
 
 def test_deeply_nested_with_different_branching():
