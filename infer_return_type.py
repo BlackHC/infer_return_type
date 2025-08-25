@@ -4,7 +4,8 @@ from typing import Any, Dict, Optional, TypeVar, get_origin, get_args
 
 from generic_utils import (
     get_generic_info, get_instance_generic_info, extract_all_typevars, 
-    create_union_if_needed, is_union_type, GenericInfo
+    create_union_if_needed, is_union_type, GenericInfo,
+    get_annotation_value_pairs
 )
 
 
@@ -358,6 +359,10 @@ def _extract_from_custom_generic_unified(
                 _align_nested_structures(ann_arg, inst_arg, bindings)
             return
 
+    # If no concrete args in instance but annotation has TypeVars, try to extract from field values
+    if annotation_info.type_params and not instance_info.concrete_args:
+        _extract_from_instance_fields(param_annotation, arg_value, bindings)
+        return
     
     # Fallback: try to extract TypeVars from the annotation structure and bind them to 
     # inferred types from the instance
@@ -367,6 +372,39 @@ def _extract_from_custom_generic_unified(
         typevar = all_typevars[0]
         concrete_type = _get_concrete_type_for_typevar_binding(arg_value)
         _bind_typevar_with_conflict_check(typevar, concrete_type, bindings)
+
+
+def _extract_from_instance_fields(annotation: Any, value: Any, bindings: Dict[TypeVar, type]) -> None:
+    """
+    Extract TypeVar bindings from instance field/element values using the unified annotation-value pairs interface.
+    
+    This function handles cases where a generic instance doesn't have explicit type parameters
+    but we can infer the types from the field/element values.
+    """
+    # Get (GenericInfo, value) pairs that map annotation type parameters to concrete values
+    annotation_value_pairs = get_annotation_value_pairs(annotation, value)
+    
+    if not annotation_value_pairs:
+        return  # No mappings found
+    
+    # Group values by TypeVar (GenericInfo with TypeVar origin)
+    typevar_to_values = {}
+    
+    for generic_info, concrete_value in annotation_value_pairs:
+        if isinstance(generic_info.origin, TypeVar):
+            typevar = generic_info.origin
+            if typevar not in typevar_to_values:
+                typevar_to_values[typevar] = []
+            typevar_to_values[typevar].append(concrete_value)
+    
+    # Bind each TypeVar to the inferred type from its values
+    for typevar, values in typevar_to_values.items():
+        if values:
+            # Get types from all values and create union if needed
+            value_types = {type(v) for v in values if v is not None}
+            if value_types:
+                inferred_type = create_union_if_needed(value_types)
+                _bind_typevar_with_conflict_check(typevar, inferred_type, bindings)
 
 
 def _align_nested_structures(annotation_info: Any, concrete_info: Any, bindings: Dict[TypeVar, type]) -> None:

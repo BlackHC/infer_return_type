@@ -454,3 +454,123 @@ def get_resolved_type(annotation: Any) -> Any:
 def extract_all_typevars(annotation: Any) -> List[TypeVar]:
     """Recursively extract all TypeVars from a nested annotation structure."""
     return generic_utils.extract_all_typevars(annotation)
+
+
+def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["GenericInfo", Any]]:
+    """
+    Extract (GenericInfo, value) pairs that map annotation type parameters to concrete values.
+    
+    This provides a unified interface for all container types:
+    - For list[A] with [1, 2, 3] → [(GenericInfo(origin=A), 1), (GenericInfo(origin=A), 2), (GenericInfo(origin=A), 3)]
+    - For dict[A, B] with {"key": 42} → [(GenericInfo(origin=A), "key"), (GenericInfo(origin=B), 42)]  
+    - For DataClass[A] with instance → [(GenericInfo(origin=A), field_val1), (GenericInfo(origin=A), field_val2)]
+    
+    Args:
+        annotation: The type annotation (e.g., list[A], dict[A, B], DataClass[A])
+        instance: The concrete instance to extract values from
+        
+    Returns:
+        List of (GenericInfo, value) pairs for type inference
+    """
+    
+    # Handle None instance
+    if instance is None:
+        return []
+    
+    # Get annotation structure
+    annotation_info = get_generic_info(annotation)
+    
+    if not annotation_info.concrete_args:
+        return []  # No type parameters to bind
+    
+    pairs = []
+    
+    # Handle built-in collections
+    if annotation_info.origin in (list, typing.List):
+        if len(annotation_info.concrete_args) == 1 and isinstance(instance, list):
+            element_generic_info = annotation_info.concrete_args[0]
+            for value in instance:
+                if value is not None:  # Skip None values
+                    pairs.append((element_generic_info, value))
+    
+    elif annotation_info.origin in (set, typing.Set):
+        if len(annotation_info.concrete_args) == 1 and isinstance(instance, set):
+            element_generic_info = annotation_info.concrete_args[0]
+            for value in instance:
+                if value is not None:  # Skip None values
+                    pairs.append((element_generic_info, value))
+    
+    elif annotation_info.origin in (dict, typing.Dict):
+        if len(annotation_info.concrete_args) == 2 and isinstance(instance, dict):
+            key_generic_info, value_generic_info = annotation_info.concrete_args
+            # Add key mappings
+            for key in instance.keys():
+                if key is not None:
+                    pairs.append((key_generic_info, key))
+            # Add value mappings  
+            for value in instance.values():
+                if value is not None:
+                    pairs.append((value_generic_info, value))
+    
+    elif annotation_info.origin in (tuple, typing.Tuple):
+        if isinstance(instance, tuple):
+            # Handle variable length tuple: tuple[A, ...]
+            if len(annotation_info.concrete_args) == 2 and annotation_info.concrete_args[1].origin is ...:
+                element_generic_info = annotation_info.concrete_args[0]
+                for value in instance:
+                    if value is not None:
+                        pairs.append((element_generic_info, value))
+            # Handle fixed length tuple: tuple[A, B, C]
+            else:
+                for i, value in enumerate(instance):
+                    if i < len(annotation_info.concrete_args) and value is not None:
+                        pairs.append((annotation_info.concrete_args[i], value))
+    
+    # Handle dataclasses
+    elif is_dataclass(annotation_info.origin) and is_dataclass(instance):
+        # Import locally to avoid name conflicts
+        from dataclasses import fields as get_fields
+        for dataclass_field in get_fields(instance):
+            field_value = getattr(instance, dataclass_field.name)
+            if field_value is not None:
+                # Map each field to its own field annotation
+                field_generic_info = get_generic_info(dataclass_field.type)
+                pairs.append((field_generic_info, field_value))
+    
+    # Handle Pydantic models
+    elif hasattr(annotation_info.origin, "__pydantic_fields__") and hasattr(instance, "__pydantic_fields__"):
+        for field_name, field_info in instance.__pydantic_fields__.items():
+            field_value = getattr(instance, field_name)
+            if field_value is not None:
+                # Map each field to its own field annotation
+                field_generic_info = get_generic_info(field_info.annotation)
+                pairs.append((field_generic_info, field_value))
+    
+    # Handle custom generic objects
+    elif hasattr(instance, '__dict__') and annotation_info.concrete_args:
+        # For custom objects, map all attribute values to the first TypeVar
+        first_typevar_info = annotation_info.concrete_args[0]
+        for value in instance.__dict__.values():
+            if value is not None:
+                pairs.append((first_typevar_info, value))
+    
+    return pairs
+
+
+def infer_type_from_values(values: List[Any]) -> type:
+    """
+    Infer a concrete type from a list of values.
+    
+    Returns a union type if values have different types, or the single type if all same.
+    """
+    if not values:
+        raise ValueError("Cannot infer type from empty values list")
+    
+    # Get types from all values
+    value_types = {type(v) for v in values if v is not None}
+    
+    if not value_types:
+        return type(None)
+    
+    # Create union if needed
+    return create_union_if_needed(value_types)
