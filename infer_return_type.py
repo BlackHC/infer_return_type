@@ -13,9 +13,6 @@ class TypeInferenceError(Exception):
     """Raised when type inference fails."""
 
 
-# Use is_union_type from generic_utils instead of local function
-
-
 def _extract_resolved_type(arg: Any) -> Any:
     """Extract resolved type from GenericInfo objects or return the argument as-is."""
     return arg.resolved_type if hasattr(arg, 'resolved_type') else arg
@@ -46,26 +43,6 @@ def _bind_typevar_with_conflict_check(
         bindings[typevar] = concrete_type
 
 
-# Removed _create_union_type - use create_union_if_needed directly
-
-
-def _handle_empty_collection_typevar(
-    typevar: TypeVar,
-    type_overrides: Dict[TypeVar, type],
-    bindings: Dict[TypeVar, type]
-) -> bool:
-    """
-    Handle TypeVar binding for empty collections with type overrides.
-    Returns True if handled (binding was made or skipped), False if should continue processing.
-    """
-    if typevar in type_overrides:
-        concrete_type = type_overrides[typevar]
-        _bind_typevar_with_conflict_check(typevar, concrete_type, bindings)
-        return True
-    # If no type override, skip binding - let other parameters potentially bind this TypeVar
-    return True
-
-
 def _infer_and_bind_collection_typevar(
     typevar: TypeVar,
     collection_items: list,
@@ -73,7 +50,7 @@ def _infer_and_bind_collection_typevar(
 ) -> None:
     """Infer type from collection items and bind TypeVar using generic_utils."""
     if not collection_items:
-        return  # Should have been handled by _handle_empty_collection_typevar
+        return  # Empty collection, skip binding
     
     # Use generic_utils to get full type information for each item
     item_generic_infos = {get_instance_generic_info(item) for item in collection_items}
@@ -167,136 +144,79 @@ def _type_matches_bound_type(item_type: type, bound_type: type) -> bool:
     return False
 
 
-def _extract_typevar_bindings_from_annotation(
-    param_annotation: Any, 
-    arg_value: Any, 
+def _handle_union_type(
+    union_args: list,
+    arg_value: Any,
     bindings: Dict[TypeVar, type],
-    type_overrides: Optional[Dict[TypeVar, type]] = None
+    type_overrides: Dict[TypeVar, type]
 ) -> None:
-    """
-    Extract TypeVar bindings by walking the annotation structure and binding 
-    TypeVars to concrete types derived from the argument value.
-    
-    This is annotation-driven: we trust the annotation structure completely
-    and only use the value to provide concrete type information for TypeVar binding.
-    """
-    
-    if type_overrides is None:
-        type_overrides = {}
-    
-    # Base case: Direct TypeVar
-    if isinstance(param_annotation, TypeVar):
-        # Check if we have a type override for this TypeVar
-        if param_annotation in type_overrides:
-            concrete_type = type_overrides[param_annotation]
-        else:
-            concrete_type = _get_concrete_type_for_typevar_binding(arg_value)
-        
-        _bind_typevar_with_conflict_check(param_annotation, concrete_type, bindings)
+    """Handle Union type annotations by trying each alternative."""
+    # Handle Optional[T] -> Union[T, None] as a special case
+    if len(union_args) == 2 and type(None) in union_args:
+        if arg_value is not None:
+            non_none_type = union_args[0] if union_args[1] is type(None) else union_args[1]
+            _extract_typevar_bindings_from_annotation(non_none_type, arg_value, bindings, type_overrides)
+        # If arg_value is None, we can't bind the TypeVar but that's OK for Optional
         return
     
-    # Use generic_utils to get annotation structure
-    info = get_generic_info(param_annotation)
-    origin = info.origin
-    
-    # Handle case where args are GenericInfo objects - extract resolved types
-    args = [_extract_resolved_type(arg) for arg in info.concrete_args]
-    
-    # Handle Union types (including Optional[T] which is Union[T, None])
-    if is_union_type(origin):
-        # Handle Optional[T] -> Union[T, None] as a special case
-        if len(args) == 2 and type(None) in args:
-            if arg_value is not None:
-                non_none_type = args[0] if args[1] is type(None) else args[1]
-                _extract_typevar_bindings_from_annotation(non_none_type, arg_value, bindings, type_overrides)
-            # If arg_value is None, we can't bind the TypeVar but that's OK for Optional
+    # Handle general Union types - try each alternative until one succeeds
+    for union_alternative in union_args:
+        try:
+            # Create a temporary bindings copy to test this alternative
+            temp_bindings = bindings.copy()
+            _extract_typevar_bindings_from_annotation(union_alternative, arg_value, temp_bindings, type_overrides)
+            # If we succeeded, update the real bindings and return
+            bindings.update(temp_bindings)
             return
-        
-        # Handle general Union types - try each alternative until one succeeds
-        for union_alternative in args:
-            try:
-                # Create a temporary bindings copy to test this alternative
-                temp_bindings = bindings.copy()
-                _extract_typevar_bindings_from_annotation(union_alternative, arg_value, temp_bindings, type_overrides)
-                # If we succeeded, update the real bindings and return
-                bindings.update(temp_bindings)
-                return
-            except (TypeInferenceError, AttributeError, TypeError):
-                # This alternative didn't match, try the next one
-                continue
-        
-        # If no alternative matched, raise an error
-        raise TypeInferenceError(
-            f"Value {arg_value} of type {type(arg_value)} doesn't match any alternative in Union {args}"
-        )
+        except (TypeInferenceError, AttributeError, TypeError):
+            # This alternative didn't match, try the next one
+            continue
     
-    # If not a Union but still not generic according to generic_utils, 
-    # check if it's actually a custom generic we should handle
-    if not info.is_generic:
-        # Try custom generic handling as fallback
-        _extract_from_custom_generic_unified(param_annotation, arg_value, bindings, type_overrides)
-        return
-    
-    # Handle generic collections using unified logic
-    if origin in (list, typing.List):
-        if len(args) == 1 and isinstance(arg_value, list):
-            element_annotation = args[0]
-            
-            if isinstance(element_annotation, TypeVar):
-                if not arg_value:  # Empty list
-                    _handle_empty_collection_typevar(element_annotation, type_overrides, bindings)
-                else:
-                    _infer_and_bind_collection_typevar(element_annotation, arg_value, bindings)
-            else:
-                # Process each element with non-TypeVar annotation
-                for item in arg_value:
-                    _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
-        else:
-            raise TypeInferenceError(f"Expected list but got {type(arg_value)}")
+    # If no alternative matched, raise an error
+    raise TypeInferenceError(
+        f"Value {arg_value} of type {type(arg_value)} doesn't match any alternative in Union {union_args}"
+    )
 
+
+def _handle_container_type(
+    origin: Any,
+    args: list,
+    arg_value: Any,
+    bindings: Dict[TypeVar, type],
+    type_overrides: Dict[TypeVar, type]
+) -> None:
+    """Unified handler for all container types (list, dict, tuple, set)."""
+    
+    # List and Set containers (single element type)
+    if origin in (list, typing.List, set, typing.Set):
+        expected_type = list if origin in (list, typing.List) else set
+        if len(args) == 1 and isinstance(arg_value, expected_type):
+            element_annotation = args[0]
+            _handle_collection_elements(element_annotation, list(arg_value), bindings, type_overrides)
+        else:
+            raise TypeInferenceError(f"Expected {expected_type.__name__} but got {type(arg_value)}")
+    
+    # Dict containers (key and value types)
     elif origin in (dict, typing.Dict):
         if len(args) == 2 and isinstance(arg_value, dict):
             key_annotation, value_annotation = args[0], args[1]
             
-            # Handle TypeVar annotations for keys and values separately
-            if isinstance(key_annotation, TypeVar):
-                if not arg_value:  # Empty dict
-                    _handle_empty_collection_typevar(key_annotation, type_overrides, bindings)
-                else:
-                    _infer_and_bind_collection_typevar(key_annotation, list(arg_value.keys()), bindings)
-            else:
-                # Process keys with non-TypeVar annotation
-                for key in arg_value.keys():
-                    _extract_typevar_bindings_from_annotation(key_annotation, key, bindings, type_overrides)
+            # Handle keys
+            _handle_collection_elements(key_annotation, list(arg_value.keys()), bindings, type_overrides)
             
-            if isinstance(value_annotation, TypeVar):
-                if not arg_value:  # Empty dict (already checked above but being explicit)
-                    _handle_empty_collection_typevar(value_annotation, type_overrides, bindings)
-                else:
-                    _infer_and_bind_collection_typevar(value_annotation, list(arg_value.values()), bindings)
-            else:
-                # Process values with non-TypeVar annotation
-                for value in arg_value.values():
-                    _extract_typevar_bindings_from_annotation(value_annotation, value, bindings, type_overrides)
+            # Handle values  
+            _handle_collection_elements(value_annotation, list(arg_value.values()), bindings, type_overrides)
         else:
             raise TypeInferenceError(f"Expected dict but got {type(arg_value)}")
-
+    
+    # Tuple containers
     elif origin in (tuple, typing.Tuple):
         if isinstance(arg_value, tuple):
             # Handle tuple[T, ...] vs tuple[T1, T2, T3]
             if len(args) == 2 and args[1] is ...:
                 # Variable length tuple: tuple[T, ...]
                 element_annotation = args[0]
-                
-                if isinstance(element_annotation, TypeVar):
-                    if not arg_value:  # Empty tuple
-                        _handle_empty_collection_typevar(element_annotation, type_overrides, bindings)
-                    else:
-                        _infer_and_bind_collection_typevar(element_annotation, list(arg_value), bindings)
-                else:
-                    # Process each element with non-TypeVar annotation
-                    for item in arg_value:
-                        _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
+                _handle_collection_elements(element_annotation, list(arg_value), bindings, type_overrides)
             else:
                 # Fixed length tuple: tuple[T1, T2, T3]
                 for i, item in enumerate(arg_value):
@@ -304,47 +224,104 @@ def _extract_typevar_bindings_from_annotation(
                         _extract_typevar_bindings_from_annotation(args[i], item, bindings, type_overrides)
         else:
             raise TypeInferenceError(f"Expected tuple but got {type(arg_value)}")
-
-    elif origin in (set, typing.Set):
-        if len(args) == 1 and isinstance(arg_value, set):
-            element_annotation = args[0]
-            
-            if isinstance(element_annotation, TypeVar):
-                if not arg_value:  # Empty set
-                    _handle_empty_collection_typevar(element_annotation, type_overrides, bindings)
-                else:
-                    _infer_and_bind_collection_typevar(element_annotation, list(arg_value), bindings)
-            else:
-                # Check if element annotation is a Union type
-                elem_info = get_generic_info(element_annotation)
-                if is_union_type(elem_info.origin):
-                    # Handle Union element types with smart partitioning
-                    union_args = [_extract_resolved_type(arg) for arg in elem_info.concrete_args]
-                    _handle_union_container_elements(union_args, list(arg_value), bindings, type_overrides)
-                else:
-                    # Process each element with non-Union annotation
-                    for item in arg_value:
-                        _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
-        else:
-            raise TypeInferenceError(f"Expected set but got {type(arg_value)}")
     
-    # Handle custom generic types using generic_utils
     else:
-        _extract_from_custom_generic_unified(param_annotation, arg_value, bindings, type_overrides)
+        # This shouldn't happen if called correctly, but handle gracefully
+        raise TypeInferenceError(f"Unsupported container type: {origin}")
+
+
+def _handle_collection_elements(
+    element_annotation: Any,
+    items: list,
+    bindings: Dict[TypeVar, type],
+    type_overrides: Dict[TypeVar, type]
+) -> None:
+    """Handle elements in a collection (list, set, dict keys/values)."""
+    
+    if isinstance(element_annotation, TypeVar):
+        # Direct TypeVar - handle empty collections with type overrides
+        if not items:
+            if element_annotation in type_overrides:
+                concrete_type = type_overrides[element_annotation]
+                _bind_typevar_with_conflict_check(element_annotation, concrete_type, bindings)
+        else:
+            _infer_and_bind_collection_typevar(element_annotation, items, bindings)
+    else:
+        # Check if element annotation is a Union type - needs special handling
+        elem_info = get_generic_info(element_annotation)
+        if is_union_type(elem_info.origin):
+            # For Optional[T] in collections, handle specially to avoid binding T to None
+            union_args = [_extract_resolved_type(arg) for arg in elem_info.concrete_args]
+            if len(union_args) == 2 and type(None) in union_args:
+                # This is Optional[T] - only process non-None items
+                non_none_items = [item for item in items if item is not None]
+                if non_none_items:
+                    non_none_type = union_args[0] if union_args[1] is type(None) else union_args[1]
+                    for item in non_none_items:
+                        _extract_typevar_bindings_from_annotation(non_none_type, item, bindings, type_overrides)
+            else:
+                # General Union handling with smart partitioning
+                _handle_union_container_elements(union_args, items, bindings, type_overrides)
+        else:
+            # Non-Union annotation - recursively process each element
+            for item in items:
+                _extract_typevar_bindings_from_annotation(element_annotation, item, bindings, type_overrides)
+
+
+def _extract_from_instance_fields(
+    annotation: Any, 
+    value: Any, 
+    bindings: Dict[TypeVar, type], 
+    type_overrides: Dict[TypeVar, type]
+) -> None:
+    """
+    Extract TypeVar bindings from instance field/element values with recursive nested field extraction.
+    
+    This function handles cases where a generic instance doesn't have explicit type parameters
+    but we can infer the types from the field/element values, including nested structures.
+    """
+    # Get (GenericInfo, value) pairs that map annotation type parameters to concrete values
+    annotation_value_pairs = get_annotation_value_pairs(annotation, value)
+    
+    if not annotation_value_pairs:
+        return  # No mappings found
+    
+    # Process each annotation-value pair
+    for generic_info, concrete_value in annotation_value_pairs:
+        if isinstance(generic_info.origin, TypeVar):
+            # Direct TypeVar binding
+            typevar = generic_info.origin
+            concrete_type = _get_concrete_type_for_typevar_binding(concrete_value)
+            _bind_typevar_with_conflict_check(typevar, concrete_type, bindings)
+        else:
+            # Recursively extract from nested structures
+            # The generic_info represents a nested type (e.g., List[A]) and concrete_value is the actual value
+            # We need to recursively extract TypeVars from this nested structure
+            try:
+                _extract_typevar_bindings_from_annotation(
+                    generic_info.resolved_type, concrete_value, bindings, type_overrides
+                )
+            except (TypeInferenceError, AttributeError, TypeError):
+                # If recursive extraction fails, try a fallback approach
+                # Extract all TypeVars from the nested annotation and infer from the concrete value
+                nested_typevars = extract_all_typevars(generic_info.resolved_type)
+                if len(nested_typevars) == 1:
+                    typevar = nested_typevars[0]
+                    concrete_type = _get_concrete_type_for_typevar_binding(concrete_value)
+                    _bind_typevar_with_conflict_check(typevar, concrete_type, bindings)
 
 
 def _extract_from_custom_generic_unified(
     param_annotation: Any, 
     arg_value: Any, 
     bindings: Dict[TypeVar, type],
-    type_overrides: Optional[Dict[TypeVar, type]] = None  # pylint: disable=unused-argument
+    type_overrides: Dict[TypeVar, type]
 ) -> None:
     """
     Extract TypeVar bindings from custom generic types using unified generic_utils approach.
     
     This replaces the old special-case logic with a unified approach.
     """
-    
     # Get annotation info
     annotation_info = get_generic_info(param_annotation)
     
@@ -361,7 +338,7 @@ def _extract_from_custom_generic_unified(
 
     # If no concrete args in instance but annotation has TypeVars, try to extract from field values
     if annotation_info.type_params and not instance_info.concrete_args:
-        _extract_from_instance_fields(param_annotation, arg_value, bindings)
+        _extract_from_instance_fields(param_annotation, arg_value, bindings, type_overrides)
         return
     
     # Fallback: try to extract TypeVars from the annotation structure and bind them to 
@@ -372,39 +349,6 @@ def _extract_from_custom_generic_unified(
         typevar = all_typevars[0]
         concrete_type = _get_concrete_type_for_typevar_binding(arg_value)
         _bind_typevar_with_conflict_check(typevar, concrete_type, bindings)
-
-
-def _extract_from_instance_fields(annotation: Any, value: Any, bindings: Dict[TypeVar, type]) -> None:
-    """
-    Extract TypeVar bindings from instance field/element values using the unified annotation-value pairs interface.
-    
-    This function handles cases where a generic instance doesn't have explicit type parameters
-    but we can infer the types from the field/element values.
-    """
-    # Get (GenericInfo, value) pairs that map annotation type parameters to concrete values
-    annotation_value_pairs = get_annotation_value_pairs(annotation, value)
-    
-    if not annotation_value_pairs:
-        return  # No mappings found
-    
-    # Group values by TypeVar (GenericInfo with TypeVar origin)
-    typevar_to_values = {}
-    
-    for generic_info, concrete_value in annotation_value_pairs:
-        if isinstance(generic_info.origin, TypeVar):
-            typevar = generic_info.origin
-            if typevar not in typevar_to_values:
-                typevar_to_values[typevar] = []
-            typevar_to_values[typevar].append(concrete_value)
-    
-    # Bind each TypeVar to the inferred type from its values
-    for typevar, values in typevar_to_values.items():
-        if values:
-            # Get types from all values and create union if needed
-            value_types = {type(v) for v in values if v is not None}
-            if value_types:
-                inferred_type = create_union_if_needed(value_types)
-                _bind_typevar_with_conflict_check(typevar, inferred_type, bindings)
 
 
 def _align_nested_structures(annotation_info: Any, concrete_info: Any, bindings: Dict[TypeVar, type]) -> None:
@@ -446,6 +390,61 @@ def _align_nested_structures(annotation_info: Any, concrete_info: Any, bindings:
     # Recursively align each argument
     for ann_arg, concrete_arg in zip(ann_args, concrete_args):
         _align_nested_structures(ann_arg, concrete_arg, bindings)
+
+
+def _extract_typevar_bindings_from_annotation(
+    param_annotation: Any, 
+    arg_value: Any, 
+    bindings: Dict[TypeVar, type],
+    type_overrides: Optional[Dict[TypeVar, type]] = None
+) -> None:
+    """
+    Extract TypeVar bindings by walking the annotation structure and binding 
+    TypeVars to concrete types derived from the argument value.
+    
+    This is annotation-driven: we trust the annotation structure completely
+    and only use the value to provide concrete type information for TypeVar binding.
+    """
+    
+    if type_overrides is None:
+        type_overrides = {}
+    
+    # Base case: Direct TypeVar
+    if isinstance(param_annotation, TypeVar):
+        # Check if we have a type override for this TypeVar
+        if param_annotation in type_overrides:
+            concrete_type = type_overrides[param_annotation]
+        else:
+            concrete_type = _get_concrete_type_for_typevar_binding(arg_value)
+        
+        _bind_typevar_with_conflict_check(param_annotation, concrete_type, bindings)
+        return
+    
+    # Use generic_utils to get annotation structure
+    info = get_generic_info(param_annotation)
+    origin = info.origin
+    
+    # Handle case where args are GenericInfo objects - extract resolved types
+    args = [_extract_resolved_type(arg) for arg in info.concrete_args]
+    
+    # Handle Union types (including Optional[T] which is Union[T, None])
+    if is_union_type(origin):
+        _handle_union_type(args, arg_value, bindings, type_overrides)
+        return
+    
+    # If not a Union but still not generic according to generic_utils, 
+    # check if it's actually a custom generic we should handle
+    if not info.is_generic:
+        # Try custom generic handling as fallback
+        _extract_from_custom_generic_unified(param_annotation, arg_value, bindings, type_overrides)
+        return
+    
+    # Handle built-in container types with unified logic
+    if origin in (list, typing.List, dict, typing.Dict, tuple, typing.Tuple, set, typing.Set):
+        _handle_container_type(origin, args, arg_value, bindings, type_overrides)
+    else:
+        # Handle custom generic types using generic_utils
+        _extract_from_custom_generic_unified(param_annotation, arg_value, bindings, type_overrides)
 
 
 def _substitute_type_vars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
