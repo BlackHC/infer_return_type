@@ -539,11 +539,14 @@ def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["Ge
             field_generic_info = get_generic_info(field_info.annotation)
             pairs.append((field_generic_info, field_value))
     
-    # Handle custom generic objects
+    # Handle custom generic objects (only if not already handled above)
     elif hasattr(instance, '__dict__') and annotation_info.concrete_args:
         # For custom objects, map all attribute values to the first TypeVar
+        # But exclude special attributes like __orig_class__
         first_typevar_info = annotation_info.concrete_args[0]
-        for value in instance.__dict__.values():
-            pairs.append((first_typevar_info, value))
+        for key, value in instance.__dict__.items():
+            # Skip special attributes that shouldn't be used for type inference
+            if not key.startswith('__'):
+                pairs.append((first_typevar_info, value))
     
     return pairs

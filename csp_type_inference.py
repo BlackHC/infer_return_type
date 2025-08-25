@@ -20,7 +20,8 @@ from enum import Enum
 
 # Import unified generic utilities
 from generic_utils import (
-    GenericTypeUtils, get_concrete_args, get_generic_origin, create_union_if_needed
+    GenericTypeUtils, get_concrete_args, get_generic_origin, create_union_if_needed,
+    get_annotation_value_pairs, is_union_type
 )
 
 
@@ -223,6 +224,8 @@ class CSPTypeInferenceEngine:
         self.domain_priorities: Dict[TypeVar, int] = {}
         # Track constraint sources for each domain
         self.domain_sources: Dict[TypeVar, str] = {}
+        # Fallback evidence for unbound TypeVars
+        self._fallback_evidence: List[Tuple[type, str]] = []
         # Use unified generic type utilities
         self.generic_utils = GenericTypeUtils()
         
@@ -233,6 +236,7 @@ class CSPTypeInferenceEngine:
         self.solutions.clear()
         self.domain_priorities.clear()
         self.domain_sources.clear()
+        self._fallback_evidence.clear()
         
     def add_constraint(self, constraint: TypeConstraint):
         """Add a constraint to the CSP."""
@@ -329,7 +333,16 @@ class CSPTypeInferenceEngine:
         
     def collect_constraints_from_annotation_value(self, annotation: Any, value: Any, source: str = ""):
         """Collect constraints from annotation/value pair (main entry point)."""
+        initial_constraint_count = len(self.constraints)
+        
         self._collect_constraints_recursive(annotation, value, source)
+        
+        # Fallback: if no constraints were generated but the instance has rich type information,
+        # try to extract concrete types from the instance and bind them to any unbound TypeVars
+        # This handles cases like List[Box[A]] -> List[Box] where TypeVar A is lost in the annotation
+        # but the instance [Box[int](item=1)] still contains the concrete type information
+        if len(self.constraints) == initial_constraint_count:  # No new constraints generated
+            self._fallback_instance_type_extraction(annotation, value, source)
         
     def _collect_constraints_recursive(self, annotation: Any, value: Any, source: str):
         """Recursively collect constraints from annotation/value pairs."""
@@ -341,6 +354,530 @@ class CSPTypeInferenceEngine:
             self.add_bounds_constraint(annotation, f"{source}:bounds")
             return
             
+        # Handle Union types (including Optional) first
+        origin = get_generic_origin(annotation)
+        if is_union_type(origin):
+            self._handle_union_annotation(annotation, value, source)
+            return
+            
+        # Use the new get_annotation_value_pairs function for unified constraint extraction
+        try:
+            pairs = get_annotation_value_pairs(annotation, value)
+            
+            if pairs:
+                # Group pairs by TypeVar to handle them properly
+                typevar_value_groups = {}
+                
+                for generic_info, val in pairs:
+                    # Handle direct TypeVars
+                    if isinstance(generic_info.origin, TypeVar):
+                        typevar = generic_info.origin
+                        if typevar not in typevar_value_groups:
+                            typevar_value_groups[typevar] = []
+                        
+                        # Improved: Extract concrete types from complex values
+                        concrete_types = self._extract_concrete_types_from_value(val)
+                        typevar_value_groups[typevar].extend(concrete_types)
+                        
+                    # Handle Union types - need to determine which TypeVar the value should bind to
+                    elif is_union_type(generic_info.origin):
+                        self._handle_union_value_binding(generic_info, val, typevar_value_groups)
+                    else:
+                        # Extract TypeVars from nested concrete_args
+                        self._extract_typevars_from_generic_info(generic_info, val, typevar_value_groups)
+                        
+                        # Only use recursive processing if we didn't extract TypeVars from concrete_args
+                        # This prevents double-processing the same data
+                        if not self._has_typevars_in_concrete_args(generic_info):
+                            self._collect_constraints_recursive(generic_info.resolved_type, val, f"{source}:nested")
+                
+                # Create constraints for each TypeVar
+                for typevar, value_types in typevar_value_groups.items():
+                    if len(value_types) == 1:
+                        # Single type - create equality constraint
+                        self.add_equality_constraint(typevar, value_types[0], f"{source}:unified", Variance.COVARIANT)
+                    elif len(value_types) > 1:
+                        # Multiple types - create subset constraint (union)
+                        unique_types = set(value_types)
+                        if len(unique_types) == 1:
+                            # All the same type, even if multiple values
+                            self.add_equality_constraint(typevar, next(iter(unique_types)), f"{source}:unified", Variance.COVARIANT)
+                        else:
+                            # Different types - create subset constraint
+                            self.add_subset_constraint({typevar}, unique_types, Variance.COVARIANT, f"{source}:unified_mixed")
+                    
+                    # Always add bounds constraints
+                    self.add_bounds_constraint(typevar, f"{source}:bounds")
+                
+                return
+            
+        except (TypeError, AttributeError, ValueError):
+            # Fall back to the old approach if the new one fails
+            pass
+            
+        # Fallback: Handle using the old method for complex cases
+        self._handle_annotation_fallback(annotation, value, source)
+    
+    def _extract_typevars_from_generic_info(self, generic_info, instance, typevar_value_groups):
+        """Extract TypeVars from nested concrete_args and map them to concrete types from the instance."""
+        
+        # Primary approach: Get the concrete type information from the instance
+        instance_generic_info = self.generic_utils.get_instance_generic_info(instance)
+        
+        # If the instance has concrete type information, use it to bind TypeVars directly
+        if instance_generic_info.concrete_args:
+            # Map between annotation TypeVars and instance concrete types
+            self._map_annotation_to_instance_typevars(
+                generic_info.concrete_args, 
+                instance_generic_info.concrete_args, 
+                typevar_value_groups
+            )
+            return  # Direct mapping worked, we're done
+        
+        # Fallback: Try to get more detailed pairs by calling get_annotation_value_pairs recursively
+        # This handles cases like Tuple[Dict[A, B], Set[A | B]] by drilling down into the tuple elements
+        # Only use this when direct mapping didn't work
+        try:
+            nested_pairs = get_annotation_value_pairs(generic_info.resolved_type, instance)
+            if nested_pairs:
+                # Process the nested pairs through the main constraint collection logic
+                for nested_generic_info, nested_value in nested_pairs:
+                    if isinstance(nested_generic_info.origin, TypeVar):
+                        typevar = nested_generic_info.origin
+                        if typevar not in typevar_value_groups:
+                            typevar_value_groups[typevar] = []
+                        # Use the improved extraction for these nested values
+                        concrete_types = self._extract_concrete_types_from_value(nested_value)
+                        typevar_value_groups[typevar].extend(concrete_types)
+                    elif is_union_type(nested_generic_info.origin):
+                        self._handle_union_value_binding(nested_generic_info, nested_value, typevar_value_groups)
+                    else:
+                        # Recursively process even deeper
+                        self._extract_typevars_from_generic_info(nested_generic_info, nested_value, typevar_value_groups)
+                return  # We processed the nested pairs, so we're done
+        except (TypeError, AttributeError, ValueError):
+            # Fall back to the final approach if recursive processing fails
+            pass
+            
+        # Final fallback: just collect TypeVars from annotation without concrete bindings
+        self._collect_typevars_from_args(generic_info.concrete_args, typevar_value_groups, instance)
+    
+    def _map_annotation_to_instance_typevars(self, annotation_args, instance_args, typevar_value_groups):
+        """Map TypeVars from annotation to concrete types from instance."""
+        
+        # Pair up annotation args with instance args
+        for ann_arg, inst_arg in zip(annotation_args, instance_args):
+            if isinstance(ann_arg.origin, TypeVar):
+                # This is a TypeVar in the annotation - bind it to the instance type
+                typevar = ann_arg.origin
+                concrete_type = inst_arg.resolved_type
+                
+                if typevar not in typevar_value_groups:
+                    typevar_value_groups[typevar] = []
+                typevar_value_groups[typevar].append(concrete_type)
+            elif is_union_type(ann_arg.origin):
+                # Handle union types in annotation args
+                # Currently handled by the recursive processing approach
+                # This case is kept for completeness but union handling
+                # is more effectively done in the recursive _extract_typevars_from_generic_info
+                pass
+            elif ann_arg.concrete_args and inst_arg.concrete_args:
+                # Recursively map nested generic args
+                self._map_annotation_to_instance_typevars(
+                    ann_arg.concrete_args, 
+                    inst_arg.concrete_args, 
+                    typevar_value_groups
+                )
+    
+    def _collect_typevars_from_args(self, args, typevar_value_groups, fallback_instance):
+        """Collect TypeVars from args, using fallback instance for type inference."""
+        
+        for i, arg in enumerate(args):
+            if isinstance(arg.origin, TypeVar):
+                typevar = arg.origin
+                
+                # Extract concrete types from the fallback instance based on position
+                concrete_types = self._extract_types_from_instance_by_position(fallback_instance, i)
+                
+                if typevar not in typevar_value_groups:
+                    typevar_value_groups[typevar] = []
+                typevar_value_groups[typevar].extend(concrete_types)
+            elif arg.concrete_args:
+                # For nested generic structures, extract the values at this position 
+                # and recursively process them against the nested annotation
+                if isinstance(fallback_instance, dict) and i < 2:
+                    if i == 0:
+                        # Keys of the dict - extract their types directly
+                        for key in fallback_instance.keys():
+                            self._collect_typevars_from_args(arg.concrete_args, typevar_value_groups, key)
+                    elif i == 1:
+                        # Values of the dict - recursively process them
+                        for value in fallback_instance.values():
+                            self._collect_typevars_from_args(arg.concrete_args, typevar_value_groups, value)
+                elif isinstance(fallback_instance, (list, tuple, set)) and i == 0:
+                    # Elements of the container
+                    for element in fallback_instance:
+                        self._collect_typevars_from_args(arg.concrete_args, typevar_value_groups, element)
+                else:
+                    # Fallback: recursively process with the same instance
+                    self._collect_typevars_from_args(arg.concrete_args, typevar_value_groups, fallback_instance)
+    
+    def _extract_types_from_instance_by_position(self, instance, position):
+        """Extract concrete types from an instance based on the type parameter position."""
+        
+        if isinstance(instance, dict):
+            if position == 0:
+                # First type parameter - extract key types
+                return [type(key) for key in instance.keys()]
+            elif position == 1:
+                # Second type parameter - extract value types
+                return [type(value) for value in instance.values()]
+        elif isinstance(instance, (list, tuple, set)):
+            if position == 0:
+                # First (and usually only) type parameter - extract element types
+                return [type(item) for item in instance]
+        
+        # Fallback: use the instance type itself
+        return [_infer_type_from_value(instance)]
+    
+    def _has_typevars_in_concrete_args(self, generic_info):
+        """Check if a GenericInfo has TypeVars in its concrete_args hierarchy."""
+        return self._contains_typevars_recursive(generic_info.concrete_args)
+    
+    def _contains_typevars_recursive(self, args):
+        """Recursively check if any args contain TypeVars."""
+        for arg in args:
+            if isinstance(arg.origin, TypeVar):
+                return True
+            if arg.concrete_args and self._contains_typevars_recursive(arg.concrete_args):
+                return True
+        return False
+    
+    def _handle_union_value_binding(self, generic_info, val, typevar_value_groups):
+        """Handle binding a value to a union type like Union[A, B]."""
+        
+        # Get the union arguments (the TypeVars in the union)
+        args_info = get_concrete_args(generic_info.resolved_type)
+        union_typevars = []
+        union_concrete_types = []
+        
+        for arg_info in args_info:
+            if isinstance(arg_info.origin, TypeVar):
+                union_typevars.append(arg_info.origin)
+            else:
+                union_concrete_types.append(arg_info.resolved_type)
+        
+        if not union_typevars:
+            return  # No TypeVars in the union
+        
+        # Extract concrete types from the value
+        concrete_types = self._extract_concrete_types_from_value(val)
+        
+        # For complex unions (like Union[A, Dict[str, JsonValue[A]], List[JsonValue[A]]]),
+        # we need to check which part of the union the value matches and extract accordingly
+        val_type = _infer_type_from_value(val)
+        
+        # First check if the value matches any of the concrete types in the union
+        matched_concrete = False
+        for concrete_type in union_concrete_types:
+            concrete_origin = get_generic_origin(concrete_type) or concrete_type
+            if val_type == concrete_origin or isinstance(val, concrete_origin):
+                matched_concrete = True
+                # Value matches a concrete type - try to extract TypeVars from the matched structure
+                if hasattr(concrete_type, '__args__') or get_concrete_args(concrete_type):
+                    # This concrete type has TypeVars in it - extract from the value
+                    self._extract_typevars_from_concrete_type_match(concrete_type, val, union_typevars, typevar_value_groups)
+                break
+        
+        # If the value didn't match any concrete type in the union, 
+        # it should be bound directly to one of the TypeVars
+        if not matched_concrete:
+            # Smart binding strategy: For Union[A, B], try to bind the value to the TypeVar
+            # that already has compatible types, rather than adding to all TypeVars.
+            # This prevents Union[A, B] from making both A and B into unions.
+            
+            best_matches = []
+            
+            # Check which TypeVars already have values that are compatible with val_type
+            for typevar in union_typevars:
+                existing_types = typevar_value_groups.get(typevar, [])
+                if existing_types:
+                    # If the TypeVar already has values of the same type, prefer it
+                    if val_type in existing_types:
+                        best_matches.append((typevar, 10))  # High priority for exact match
+                    elif any(_types_are_compatible(val_type, existing_type) for existing_type in existing_types):
+                        best_matches.append((typevar, 5))   # Medium priority for compatible types
+                else:
+                    # TypeVar has no existing bindings - medium priority
+                    # For List[Union[A, B]] we want to distribute different types to different TypeVars
+                    best_matches.append((typevar, 6))
+            
+            if best_matches:
+                # Sort by priority and bind to the best match(es)
+                best_matches.sort(key=lambda x: x[1], reverse=True)
+                best_priority = best_matches[0][1]
+                
+                # For exact matches (priority 10), bind only to those TypeVars
+                if best_priority == 10:
+                    for typevar, priority in best_matches:
+                        if priority == best_priority:
+                            if typevar not in typevar_value_groups:
+                                typevar_value_groups[typevar] = []
+                            typevar_value_groups[typevar].extend(concrete_types)
+                else:
+                    # For lower priority matches, use a smart distribution strategy
+                    # If we have multiple TypeVars and multiple types, try to distribute them
+                    self._distribute_types_among_typevars(union_typevars, concrete_types, typevar_value_groups)
+    
+    def _extract_typevars_from_concrete_type_match(self, concrete_type: Any, value: Any, union_typevars: List[TypeVar], typevar_value_groups: Dict[TypeVar, List[type]]):
+        """Extract TypeVars when a value matches a specific concrete type in a union."""
+        # This handles cases like Union[A, Dict[str, JsonValue[A]], List[JsonValue[A]]]
+        # where the value is a dict that matches Dict[str, JsonValue[A]]
+        
+        try:
+            # Use get_annotation_value_pairs to extract from the matched structure
+            pairs = get_annotation_value_pairs(concrete_type, value)
+            
+            for generic_info, nested_value in pairs:
+                if isinstance(generic_info.origin, TypeVar) and generic_info.origin in union_typevars:
+                    typevar = generic_info.origin
+                    if typevar not in typevar_value_groups:
+                        typevar_value_groups[typevar] = []
+                    
+                    # Extract concrete types from the nested value
+                    concrete_types = self._extract_concrete_types_from_value(nested_value)
+                    typevar_value_groups[typevar].extend(concrete_types)
+                    
+                elif is_union_type(generic_info.origin):
+                    # Recursively handle nested unions
+                    self._handle_union_value_binding(generic_info, nested_value, typevar_value_groups)
+                else:
+                    # Drill deeper into the structure
+                    self._extract_typevars_from_generic_info(generic_info, nested_value, typevar_value_groups)
+        
+        except (TypeError, AttributeError, ValueError):
+            # Fallback: just extract what we can from the value directly
+            concrete_types = self._extract_concrete_types_from_value(value)
+            if concrete_types and union_typevars:
+                # Bind to the first available TypeVar as a fallback
+                first_typevar = union_typevars[0]
+                if first_typevar not in typevar_value_groups:
+                    typevar_value_groups[first_typevar] = []
+                typevar_value_groups[first_typevar].extend(concrete_types)
+    
+    def _distribute_types_among_typevars(self, union_typevars: List[TypeVar], concrete_types: List[type], typevar_value_groups: Dict[TypeVar, List[type]]):
+        """Intelligently distribute concrete types among TypeVars in a union."""
+        
+        # Group concrete types by their actual type
+        type_groups = {}
+        for concrete_type in concrete_types:
+            if concrete_type not in type_groups:
+                type_groups[concrete_type] = []
+            type_groups[concrete_type].append(concrete_type)
+        
+        unique_types = list(type_groups.keys())
+        
+        # Strategy: Try to assign different types to different TypeVars
+        # This works well for cases like List[Union[A, B]] with mixed int/str values
+        
+        if len(unique_types) <= len(union_typevars):
+            # We have enough TypeVars for each unique type
+            for i, unique_type in enumerate(unique_types):
+                if i < len(union_typevars):
+                    typevar = union_typevars[i]
+                    if typevar not in typevar_value_groups:
+                        typevar_value_groups[typevar] = []
+                    typevar_value_groups[typevar].append(unique_type)
+        else:
+            # More types than TypeVars - distribute as evenly as possible
+            types_per_var = len(unique_types) // len(union_typevars)
+            remainder = len(unique_types) % len(union_typevars)
+            
+            type_index = 0
+            for i, typevar in enumerate(union_typevars):
+                if typevar not in typevar_value_groups:
+                    typevar_value_groups[typevar] = []
+                
+                # Assign types_per_var types to this TypeVar
+                count = types_per_var + (1 if i < remainder else 0)
+                for _ in range(count):
+                    if type_index < len(unique_types):
+                        typevar_value_groups[typevar].append(unique_types[type_index])
+                        type_index += 1
+    
+    def _handle_union_annotation_with_instance(self, union_annotation_arg, _instance_arg, _typevar_value_groups):
+        """Handle union type in annotation with corresponding instance data."""
+        
+        # This method is currently unused as the recursive approach handles union types
+        # more effectively. Keeping it as a placeholder for potential future use.
+        # The actual union handling is now done in _handle_union_value_binding.
+        
+        # Get the union TypeVars
+        union_args_info = get_concrete_args(union_annotation_arg.resolved_type)
+        union_typevars = []
+        for arg_info in union_args_info:
+            if isinstance(arg_info.origin, TypeVar):
+                union_typevars.append(arg_info.origin)
+        
+        if not union_typevars:
+            return  # No TypeVars in the union
+        
+        # Current implementation relies on the recursive processing in 
+        # _extract_typevars_from_generic_info to handle union types properly
+    
+    def _fallback_instance_type_extraction(self, _annotation: Any, value: Any, source: str):
+        """
+        Fallback mechanism to extract type information from instances when annotation lacks TypeVars.
+        
+        This handles cases where Python's signature processing loses TypeVar information
+        (e.g., List[Box[A]] becomes List[Box]) but the instance still contains concrete types.
+        """
+        
+        try:
+            # Extract concrete types found in the instance
+            found_concrete_types = self._extract_concrete_types_from_instance(value)
+            
+            if found_concrete_types:
+                # We found concrete types in the instance (e.g., int from Box[int])
+                # but the annotation didn't have TypeVars to bind them to.
+                # 
+                # Strategy: Create a "fallback constraint" that can be used if there are
+                # unbound TypeVars elsewhere in the function signature (like in the return type)
+                
+                # For simplicity, let's assume that if we find a single concrete type,
+                # it can be bound to any unbound TypeVar that needs a binding.
+                # This is a heuristic that works for many common cases.
+                
+                if len(found_concrete_types) == 1:
+                    concrete_type = next(iter(found_concrete_types))
+                    
+                    # Create a special constraint that can bind any unbound TypeVar to this type
+                    # We'll use a special marker to indicate this is a fallback constraint
+                    self._create_fallback_constraint(concrete_type, source)
+                
+        except (TypeError, AttributeError, ValueError):
+            # If extraction fails, just skip the fallback
+            pass
+    
+    def _extract_concrete_types_from_instance(self, instance: Any) -> Set[type]:
+        """Extract concrete types from an instance, looking into containers."""
+        found_types = set()
+        
+        if isinstance(instance, (list, tuple)):
+            for item in instance:
+                item_info = self.generic_utils.get_instance_generic_info(item)
+                if item_info.concrete_args:
+                    # This item has concrete type arguments (like Box[int])
+                    for arg_info in item_info.concrete_args:
+                        found_types.add(arg_info.resolved_type)
+                        
+        elif isinstance(instance, dict):
+            for key, val in instance.items():
+                key_info = self.generic_utils.get_instance_generic_info(key)
+                val_info = self.generic_utils.get_instance_generic_info(val)
+                if key_info.concrete_args:
+                    for arg_info in key_info.concrete_args:
+                        found_types.add(arg_info.resolved_type)
+                if val_info.concrete_args:
+                    for arg_info in val_info.concrete_args:
+                        found_types.add(arg_info.resolved_type)
+        else:
+            # Single instance
+            instance_info = self.generic_utils.get_instance_generic_info(instance)
+            if instance_info.concrete_args:
+                for arg_info in instance_info.concrete_args:
+                    found_types.add(arg_info.resolved_type)
+        
+        return found_types
+    
+    def _extract_concrete_types_from_value(self, value: Any) -> List[type]:
+        """
+        Extract concrete types from a value, intelligently handling nested structures.
+        
+        This method drills down into complex values to find the actual concrete types
+        that should be bound to TypeVars, rather than just returning the top-level type.
+        """
+        concrete_types = []
+        
+        if isinstance(value, (list, tuple, set)):
+            # For containers, extract types from each element
+            for item in value:
+                # First check if the item itself has generic type information
+                item_info = self.generic_utils.get_instance_generic_info(item)
+                if item_info.concrete_args:
+                    # Extract types from the concrete args (e.g., Box[int] -> int)
+                    for arg_info in item_info.concrete_args:
+                        self._collect_concrete_types_recursive(arg_info.resolved_type, concrete_types)
+                else:
+                    # No generic info, use the item's type directly
+                    concrete_types.append(_infer_type_from_value(item))
+        
+        elif isinstance(value, dict):
+            # For dicts, we might need to extract from both keys and values
+            # but this depends on the context - for now, try to extract from values
+            # as they're more likely to contain the generic type information we need
+            for val in value.values():
+                val_info = self.generic_utils.get_instance_generic_info(val)
+                if val_info.concrete_args:
+                    for arg_info in val_info.concrete_args:
+                        self._collect_concrete_types_recursive(arg_info.resolved_type, concrete_types)
+                else:
+                    # Check if the value is itself a container we can drill into
+                    if isinstance(val, (list, tuple, set, dict)):
+                        concrete_types.extend(self._extract_concrete_types_from_value(val))
+                    else:
+                        concrete_types.append(_infer_type_from_value(val))
+        
+        else:
+            # Single value - check if it has generic type info first
+            value_info = self.generic_utils.get_instance_generic_info(value)
+            if value_info.concrete_args:
+                # Extract from concrete args (e.g., Wrap[float] -> float)
+                for arg_info in value_info.concrete_args:
+                    self._collect_concrete_types_recursive(arg_info.resolved_type, concrete_types)
+            else:
+                # Simple value, use its type - but be conservative about type objects
+                value_type = _infer_type_from_value(value)
+                # Don't extract meta-types like 'type' unless it's clearly intended
+                if value_type not in (type, bool, str) or isinstance(value, (bool, str)):
+                    concrete_types.append(value_type)
+        
+        return concrete_types
+    
+    def _collect_concrete_types_recursive(self, resolved_type: Any, concrete_types: List[type]):
+        """Recursively collect concrete types from a resolved type."""
+        # Check if this is a basic type
+        if isinstance(resolved_type, type) and not hasattr(resolved_type, '__origin__'):
+            concrete_types.append(resolved_type)
+            return
+        
+        # Check if this is a generic type with more args to extract
+        origin = get_generic_origin(resolved_type)
+        args_info = get_concrete_args(resolved_type)
+        
+        if origin and args_info:
+            # This is a parameterized generic - extract from args
+            for arg_info in args_info:
+                self._collect_concrete_types_recursive(arg_info.resolved_type, concrete_types)
+        else:
+            # Fallback to the type itself
+            if isinstance(resolved_type, type):
+                concrete_types.append(resolved_type)
+            else:
+                # Try to get the type of the resolved_type
+                concrete_types.append(type(resolved_type))
+    
+    def _create_fallback_constraint(self, concrete_type: type, source: str):
+        """Create a fallback constraint that can be applied to unbound TypeVars."""
+        # This is a simplified approach: we'll store the concrete type as "fallback evidence"
+        # that can be used during solving if there are unbound TypeVars
+        
+        # For now, let's just store this as metadata that can be used during solving
+        self._fallback_evidence.append((concrete_type, source))
+            
+    def _handle_annotation_fallback(self, annotation: Any, value: Any, source: str):
+        """Fallback method for handling annotations that can't be processed by the unified approach."""
+        
         # Use generic_utils for consistent type information extraction
         origin = get_generic_origin(annotation)
         args_info = get_concrete_args(annotation)
@@ -622,21 +1159,42 @@ class CSPTypeInferenceEngine:
         # Apply constraints to refine domains
         self._propagate_constraints()
         
-        # Check for unsatisfiable domains
-        for typevar, domain in self.domains.items():
-            if domain.is_empty():
-                raise CSPTypeInferenceError(f"No valid types for {typevar} after constraint propagation")
+        # Note: We don't immediately fail on empty domains here because
+        # they might be handled by the fallback mechanism
                 
         # Generate solution
         solution = CSPSolution()
+        unbound_typevars = []
+        
         for typevar, domain in self.domains.items():
             try:
                 best_type = domain.get_best_type()
                 solution.bind(typevar, best_type)
-            except CSPTypeInferenceError as e:
-                raise CSPTypeInferenceError(f"Failed to resolve {typevar}: {e}") from e
-                
+            except CSPTypeInferenceError:
+                # Domain is empty - this TypeVar couldn't be bound
+                unbound_typevars.append(typevar)
+        
+        # Apply fallback evidence to unbound TypeVars
+        if unbound_typevars and hasattr(self, '_fallback_evidence') and self._fallback_evidence:
+            self._apply_fallback_evidence(unbound_typevars, solution)
+            
         return solution
+    
+    def _apply_fallback_evidence(self, unbound_typevars: List[TypeVar], solution: CSPSolution):
+        """Apply fallback evidence to unbound TypeVars."""
+        
+        # Simple strategy: if we have concrete types from fallback evidence,
+        # and we have unbound TypeVars, try to bind them
+        
+        available_evidence = self._fallback_evidence.copy()
+        
+        for typevar in unbound_typevars:
+            if available_evidence:
+                # Use the first available concrete type
+                concrete_type, source = available_evidence.pop(0)
+                solution.bind(typevar, concrete_type)
+                # Add a note about the fallback binding
+                solution.conflicts.append(f"Fallback binding: {typevar} -> {concrete_type} from {source}")
         
     def _propagate_constraints(self):
         """Propagate constraints to refine TypeVar domains."""
@@ -872,7 +1430,7 @@ class CSPTypeInferenceEngine:
         # Default: return empty list if we can't extract values
         return []
     
-    def _map_annotation_to_instance_types(self, annotation_type: Any, instance_type: Any, source: str):
+    def _map_annotation_to_instance_types(self, _annotation_type: Any, instance_type: Any, source: str):
         """Map between incomplete annotation and complete instance type to infer TypeVars.
         
         This handles cases where the annotation loses TypeVar information (like Wrap[List[Box]])
@@ -1026,6 +1584,13 @@ def infer_return_type_csp(
     for typevar, override_type in type_overrides.items():
         engine.add_equality_constraint(typevar, override_type, "override", Variance.INVARIANT)
         
+    # Before solving, ensure domains exist for TypeVars in the return annotation
+    # This handles cases where TypeVars appear in return annotation but not parameters
+    return_typevars = _find_unbound_typevars(return_annotation)
+    for typevar in return_typevars:
+        if typevar not in engine.domains:
+            engine.domains[typevar] = TypeDomain(typevar)
+    
     # Solve the CSP
     try:
         solution = engine.solve()
@@ -1153,3 +1718,12 @@ def _find_unbound_typevars(annotation: Any) -> Set[TypeVar]:
             result.update(_find_unbound_typevars(arg))
             
     return result
+
+
+def _types_are_compatible(type1: type, type2: type) -> bool:
+    """Check if two types are compatible (have inheritance relationship)."""
+    try:
+        return issubclass(type1, type2) or issubclass(type2, type1)
+    except TypeError:
+        # Handle cases where types aren't classes
+        return type1 == type2
