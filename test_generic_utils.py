@@ -17,8 +17,8 @@ from dataclasses import dataclass
 
 from generic_utils import (
     BuiltinExtractor, DataclassExtractor, GenericTypeUtils, PydanticExtractor, UnionExtractor,
-    create_union_if_needed, extract_all_typevars, get_concrete_args, get_generic_info, 
-    get_generic_origin, get_instance_concrete_args, get_instance_generic_info, 
+    create_union_if_needed, extract_all_typevars, get_annotation_value_pairs, get_concrete_args, 
+    get_generic_info, get_generic_origin, get_instance_concrete_args, get_instance_generic_info, 
     get_resolved_type, get_type_parameters, is_generic_type
 )
 
@@ -911,5 +911,139 @@ class TestModernUnionTypes:
         assert _is_union_type(resolved)
         assert A in get_args(resolved)
         assert int in get_args(resolved)
+
+
+class TestGetAnnotationValuePairs:
+    """Test the get_annotation_value_pairs function."""
+    
+    def test_list_with_none_values(self):
+        """Test that None values are included in list pairs."""
+        annotation = List[A]
+        instance = [1, None, 2, None]
+        
+        pairs = get_annotation_value_pairs(annotation, instance)
+        
+        # Should have 4 pairs (including None values)
+        assert len(pairs) == 4
+        
+        # Check that we get both int and NoneType values
+        value_types = {type(val) for _, val in pairs}
+        assert value_types == {int, type(None)}
+        
+        # Check that None values are actually in the pairs
+        values = [val for _, val in pairs]
+        assert values == [1, None, 2, None]
+    
+    def test_dict_with_none_values(self):
+        """Test that None values are included in dict pairs."""
+        annotation = Dict[A, B]
+        instance = {None: 1, "key": None, "key2": 2}
+        
+        pairs = get_annotation_value_pairs(annotation, instance)
+        
+        # Should have 6 pairs: 3 keys + 3 values
+        assert len(pairs) == 6
+        
+        # Check keys (should include None)
+        key_pairs = [(info, val) for info, val in pairs 
+                    if info.origin == A]  # A is the key type
+        key_values = [val for _, val in key_pairs]
+        assert None in key_values
+        assert "key" in key_values
+        assert "key2" in key_values
+        
+        # Check values (should include None)  
+        value_pairs = [(info, val) for info, val in pairs 
+                      if info.origin == B]  # B is the value type
+        value_values = [val for _, val in value_pairs]
+        assert None in value_values
+        assert 1 in value_values
+        assert 2 in value_values
+    
+    def test_tuple_with_none_values(self):
+        """Test that None values are included in tuple pairs."""
+        # Variable length tuple
+        annotation = tuple[A, ...]
+        instance = (1, None, "hello", None)
+        
+        pairs = get_annotation_value_pairs(annotation, instance)
+        
+        # Should have 4 pairs (including None values)
+        assert len(pairs) == 4
+        
+        # Check that None values are included
+        values = [val for _, val in pairs]
+        assert values == [1, None, "hello", None]
+    
+    def test_fixed_tuple_with_none_values(self):
+        """Test that None values are included in fixed-length tuple pairs."""
+        annotation = tuple[A, B, A]
+        instance = (None, "hello", None)
+        
+        pairs = get_annotation_value_pairs(annotation, instance)
+        
+        # Should have 3 pairs
+        assert len(pairs) == 3
+        
+        # Check that None values are included in the right positions
+        values = [val for _, val in pairs]
+        assert values == [None, "hello", None]
+    
+    def test_set_with_none_values(self):
+        """Test that None values are included in set pairs."""
+        annotation = set[A]
+        instance = {1, None, "hello"}
+        
+        pairs = get_annotation_value_pairs(annotation, instance)
+        
+        # Should have 3 pairs (including None)
+        assert len(pairs) == 3
+        
+        # Check that None is included
+        values = {val for _, val in pairs}
+        assert values == {1, None, "hello"}
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_with_none_values(self):
+        """Test that None values are included in Pydantic model field pairs."""
+        from typing import Optional
+        
+        class NullableBox(BaseModel, typing.Generic[A]):
+            nullable_field: Optional[A]
+            other_field: A
+        
+        # Create instance with None value
+        instance = NullableBox[int](nullable_field=None, other_field=42)
+        
+        pairs = get_annotation_value_pairs(NullableBox[A], instance)
+        
+        # Should have 2 pairs (including None field)
+        assert len(pairs) == 2
+        
+        # Check that None value is included
+        values = [val for _, val in pairs]
+        assert None in values
+        assert 42 in values
+    
+    def test_dataclass_with_none_values(self):
+        """Test that None values are included in dataclass field pairs."""
+        
+        @dataclass
+        class NullableDataBox(typing.Generic[A]):
+            nullable_field: A
+            other_field: A
+        
+        # Create instance with None value
+        instance = NullableDataBox[int](nullable_field=None, other_field=42)
+        
+        pairs = get_annotation_value_pairs(NullableDataBox[A], instance)
+        
+        # Should have 2 pairs (including None field)
+        assert len(pairs) == 2
+        
+        # Check that None value is included
+        values = [val for _, val in pairs]
+        assert None in values
+        assert 42 in values
 
 

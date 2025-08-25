@@ -490,27 +490,23 @@ def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["Ge
         if len(annotation_info.concrete_args) == 1 and isinstance(instance, list):
             element_generic_info = annotation_info.concrete_args[0]
             for value in instance:
-                if value is not None:  # Skip None values
-                    pairs.append((element_generic_info, value))
+                pairs.append((element_generic_info, value))
     
     elif annotation_info.origin in (set, typing.Set):
         if len(annotation_info.concrete_args) == 1 and isinstance(instance, set):
             element_generic_info = annotation_info.concrete_args[0]
             for value in instance:
-                if value is not None:  # Skip None values
-                    pairs.append((element_generic_info, value))
+                pairs.append((element_generic_info, value))
     
     elif annotation_info.origin in (dict, typing.Dict):
         if len(annotation_info.concrete_args) == 2 and isinstance(instance, dict):
             key_generic_info, value_generic_info = annotation_info.concrete_args
             # Add key mappings
             for key in instance.keys():
-                if key is not None:
-                    pairs.append((key_generic_info, key))
+                pairs.append((key_generic_info, key))
             # Add value mappings  
             for value in instance.values():
-                if value is not None:
-                    pairs.append((value_generic_info, value))
+                pairs.append((value_generic_info, value))
     
     elif annotation_info.origin in (tuple, typing.Tuple):
         if isinstance(instance, tuple):
@@ -518,12 +514,11 @@ def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["Ge
             if len(annotation_info.concrete_args) == 2 and annotation_info.concrete_args[1].origin is ...:
                 element_generic_info = annotation_info.concrete_args[0]
                 for value in instance:
-                    if value is not None:
-                        pairs.append((element_generic_info, value))
+                    pairs.append((element_generic_info, value))
             # Handle fixed length tuple: tuple[A, B, C]
             else:
                 for i, value in enumerate(instance):
-                    if i < len(annotation_info.concrete_args) and value is not None:
+                    if i < len(annotation_info.concrete_args):
                         pairs.append((annotation_info.concrete_args[i], value))
     
     # Handle dataclasses
@@ -532,45 +527,23 @@ def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["Ge
         from dataclasses import fields as get_fields
         for dataclass_field in get_fields(instance):
             field_value = getattr(instance, dataclass_field.name)
-            if field_value is not None:
-                # Map each field to its own field annotation
-                field_generic_info = get_generic_info(dataclass_field.type)
-                pairs.append((field_generic_info, field_value))
+            # Map each field to its own field annotation
+            field_generic_info = get_generic_info(dataclass_field.type)
+            pairs.append((field_generic_info, field_value))
     
     # Handle Pydantic models
     elif hasattr(annotation_info.origin, "__pydantic_fields__") and hasattr(instance, "__pydantic_fields__"):
         for field_name, field_info in instance.__pydantic_fields__.items():
             field_value = getattr(instance, field_name)
-            if field_value is not None:
-                # Map each field to its own field annotation
-                field_generic_info = get_generic_info(field_info.annotation)
-                pairs.append((field_generic_info, field_value))
+            # Map each field to its own field annotation
+            field_generic_info = get_generic_info(field_info.annotation)
+            pairs.append((field_generic_info, field_value))
     
     # Handle custom generic objects
     elif hasattr(instance, '__dict__') and annotation_info.concrete_args:
         # For custom objects, map all attribute values to the first TypeVar
         first_typevar_info = annotation_info.concrete_args[0]
         for value in instance.__dict__.values():
-            if value is not None:
-                pairs.append((first_typevar_info, value))
+            pairs.append((first_typevar_info, value))
     
     return pairs
-
-
-def infer_type_from_values(values: List[Any]) -> type:
-    """
-    Infer a concrete type from a list of values.
-    
-    Returns a union type if values have different types, or the single type if all same.
-    """
-    if not values:
-        raise ValueError("Cannot infer type from empty values list")
-    
-    # Get types from all values
-    value_types = {type(v) for v in values if v is not None}
-    
-    if not value_types:
-        return type(None)
-    
-    # Create union if needed
-    return create_union_if_needed(value_types)
