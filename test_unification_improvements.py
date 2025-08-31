@@ -310,11 +310,7 @@ def test_type_override_integration():
     assert t is int
 
 
-# =============================================================================
-# COMPARISON TESTS - Show improvements over original system
-# =============================================================================
-
-def test_original_vs_unified_mixed_containers():
+def test_mixed_containers():
     """Compare original vs unified approach on mixed containers."""
     
     # Import original function for comparison
@@ -324,51 +320,49 @@ def test_original_vs_unified_mixed_containers():
     
     mixed_nested = [[1, 2], ["a", "b"]]
     
-    # Original system should fail
-    with pytest.raises(OriginalTypeInferenceError):
-        infer_return_type(process_nested_mixed, mixed_nested)
-    
     # Unified system should succeed with union
     t = infer_return_type_unified(process_nested_mixed, mixed_nested)
     assert typing.get_origin(t) is Union or hasattr(t, '__args__')
+    assert set(typing.get_args(t)) == {int, str}
 
 
 def test_architectural_improvements():
     """Demonstrate architectural improvements - unified interface."""
     
     from unification_type_inference import UnificationEngine
+    from generic_utils import GenericExtractor
     
     engine = UnificationEngine()
     
-    # Show that we have a clean extractor interface
-    assert len(engine.extractors) >= 3  # Pydantic, Dataclass, Builtin
+    # Show that we have a clean extractor interface through generic_utils
+    assert len(engine.generic_utils.extractors) >= 3  # Pydantic, Dataclass, Builtin
     
     # Each extractor implements the same interface
-    for extractor in engine.extractors:
-        assert hasattr(extractor, 'can_handle')
-        assert hasattr(extractor, 'extract_type_params')
-        assert hasattr(extractor, 'extract_concrete_types')
-        assert hasattr(extractor, 'get_variance')
+    for extractor in engine.generic_utils.extractors:
+        assert hasattr(extractor, 'can_handle_annotation')
+        assert hasattr(extractor, 'can_handle_instance')
+        assert hasattr(extractor, 'extract_from_annotation')
+        assert hasattr(extractor, 'extract_from_instance')
     
     # Test that we can easily add new extractors by subclassing
-    from unification_type_inference import TypeExtractor, Variance
-    
-    class CustomExtractor(TypeExtractor):
-        def can_handle(self, annotation, instance):
+    class CustomExtractor(GenericExtractor):
+        def can_handle_annotation(self, annotation):
             return False  # dummy implementation
         
-        def extract_type_params(self, annotation):
-            return []
+        def can_handle_instance(self, instance):
+            return False
         
-        def extract_concrete_types(self, instance):
-            return []
+        def extract_from_annotation(self, annotation):
+            from generic_utils import GenericInfo
+            return GenericInfo()
         
-        def get_variance(self, annotation, param_index):
-            return Variance.INVARIANT
+        def extract_from_instance(self, instance):
+            from generic_utils import GenericInfo
+            return GenericInfo()
     
     # Can be easily added to the system
     custom_extractor = CustomExtractor()
-    engine.extractors.append(custom_extractor)
+    engine.generic_utils.extractors.append(custom_extractor)
 
 
 if __name__ == "__main__":

@@ -184,10 +184,17 @@ class UnificationEngine:
         best_constraints = None
         best_score = -1
         
-        for alternative in args:
+        for alternative_info in args:
             try:
                 temp_constraints = []
-                self._collect_constraints_internal(alternative, value, temp_constraints)
+                if isinstance(alternative_info.origin, TypeVar):
+                    # Direct TypeVar alternative
+                    value_type = type(value)
+                    temp_constraints.append(Constraint(alternative_info.origin, value_type, Variance.INVARIANT))
+                else:
+                    # Resolved type alternative
+                    alternative = alternative_info.resolved_type
+                    self._collect_constraints_internal(alternative, value, temp_constraints)
                 
                 # Score this alternative (prefer more specific constraints)
                 score = len(temp_constraints)
@@ -209,17 +216,18 @@ class UnificationEngine:
         
         args = get_concrete_args(annotation)
         if len(args) == 1:
-            element_annotation = args[0]
+            element_annotation_info = args[0]
             
-            if isinstance(element_annotation, TypeVar):
+            if isinstance(element_annotation_info.origin, TypeVar):
                 # Collect types from all elements
                 if value:
                     element_types = {type(item) for item in value}
                     union_type = create_union_if_needed(element_types)
-                    constraints.append(Constraint(element_annotation, union_type, Variance.COVARIANT))
+                    constraints.append(Constraint(element_annotation_info.origin, union_type, Variance.COVARIANT))
                 # If empty list, don't add constraint - will be handled later
             else:
                 # Handle Union inside List specially
+                element_annotation = element_annotation_info.resolved_type
                 origin = get_generic_origin(element_annotation)
                 if origin is Union:
                     # For List[Union[A, B]] with values [int, str], we need to collect constraints differently
@@ -239,24 +247,26 @@ class UnificationEngine:
         
         args = get_concrete_args(annotation)
         if len(args) == 2:
-            key_annotation, value_annotation = args
+            key_annotation_info, value_annotation_info = args
             
-            if isinstance(key_annotation, TypeVar) and value:
+            if isinstance(key_annotation_info.origin, TypeVar) and value:
                 key_types = {type(k) for k in value.keys()}
                 union_type = create_union_if_needed(key_types)
-                constraints.append(Constraint(key_annotation, union_type, Variance.INVARIANT))
+                constraints.append(Constraint(key_annotation_info.origin, union_type, Variance.INVARIANT))
             
-            if isinstance(value_annotation, TypeVar) and value:
+            if isinstance(value_annotation_info.origin, TypeVar) and value:
                 value_types = {type(v) for v in value.values()}
                 union_type = create_union_if_needed(value_types)
-                constraints.append(Constraint(value_annotation, union_type, Variance.COVARIANT))
+                constraints.append(Constraint(value_annotation_info.origin, union_type, Variance.COVARIANT))
             
             # Recursively handle non-TypeVar annotations
-            if not isinstance(key_annotation, TypeVar):
+            if not isinstance(key_annotation_info.origin, TypeVar):
+                key_annotation = key_annotation_info.resolved_type
                 for key in value.keys():
                     self._collect_constraints_internal(key_annotation, key, constraints)
             
-            if not isinstance(value_annotation, TypeVar):
+            if not isinstance(value_annotation_info.origin, TypeVar):
+                value_annotation = value_annotation_info.resolved_type
                 for val in value.values():
                     self._collect_constraints_internal(value_annotation, val, constraints)
     
@@ -267,22 +277,29 @@ class UnificationEngine:
         
         args = get_concrete_args(annotation)
         
-        if len(args) == 2 and args[1] is ...:
+        if len(args) == 2 and args[1].origin is ...:
             # Variable length tuple: Tuple[T, ...]
-            element_annotation = args[0]
-            if isinstance(element_annotation, TypeVar) and value:
+            element_annotation_info = args[0]
+            if isinstance(element_annotation_info.origin, TypeVar) and value:
                 element_types = {type(item) for item in value}
                 union_type = create_union_if_needed(element_types)
-                constraints.append(Constraint(element_annotation, union_type, Variance.COVARIANT))
-            elif not isinstance(element_annotation, TypeVar):
+                constraints.append(Constraint(element_annotation_info.origin, union_type, Variance.COVARIANT))
+            elif not isinstance(element_annotation_info.origin, TypeVar):
+                element_annotation = element_annotation_info.resolved_type
                 for item in value:
                     self._collect_constraints_internal(element_annotation, item, constraints)
         else:
             # Fixed length tuple: Process in order for better constraint propagation
             for i, item in enumerate(value):
                 if i < len(args):
-                    # Process each tuple element, building up constraint context
-                    self._collect_constraints_internal(args[i], item, constraints)
+                    arg_info = args[i]
+                    if isinstance(arg_info.origin, TypeVar):
+                        # Direct TypeVar constraint
+                        item_type = type(item)
+                        constraints.append(Constraint(arg_info.origin, item_type, Variance.INVARIANT))
+                    else:
+                        # Process each tuple element, building up constraint context
+                        self._collect_constraints_internal(arg_info.resolved_type, item, constraints)
     
     def _handle_set_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Handle Set[T] constraints."""
@@ -291,15 +308,16 @@ class UnificationEngine:
         
         args = get_concrete_args(annotation)
         if len(args) == 1:
-            element_annotation = args[0]
+            element_annotation_info = args[0]
             
-            if isinstance(element_annotation, TypeVar):
+            if isinstance(element_annotation_info.origin, TypeVar):
                 if value:
                     element_types = {type(item) for item in value}
                     union_type = create_union_if_needed(element_types)
-                    constraints.append(Constraint(element_annotation, union_type, Variance.COVARIANT))
+                    constraints.append(Constraint(element_annotation_info.origin, union_type, Variance.COVARIANT))
             else:
                 # Check if this is a Union type
+                element_annotation = element_annotation_info.resolved_type
                 origin = get_generic_origin(element_annotation)
                 if origin is Union:
                     union_args = get_concrete_args(element_annotation)
@@ -312,6 +330,11 @@ class UnificationEngine:
     def _handle_custom_generic_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Handle custom generic types using unified generic_utils interface."""
         
+        # First try the new approach using get_annotation_value_pairs
+        if self._try_extract_with_annotation_value_pairs(annotation, value, constraints):
+            return
+        
+        # Fallback to the original approach
         # Use generic_utils to extract information
         ann_info = self.generic_utils.get_generic_info(annotation)
         val_info = self.generic_utils.get_instance_generic_info(value)
@@ -338,6 +361,213 @@ class UnificationEngine:
         
         # Fallback: try to extract from nested structure
         self._extract_from_nested_structure(annotation, value, constraints)
+    
+    def _try_extract_with_annotation_value_pairs(self, annotation: Any, value: Any, constraints: List[Constraint]) -> bool:
+        """Try to extract constraints using get_annotation_value_pairs with recursive drilling."""
+        
+        # First try direct generic structure matching for cases like PydanticModel[A, list[B]] with PydanticModel[int, list[str]]
+        if self._try_direct_generic_structure_matching(annotation, value, constraints):
+            return True
+        
+        # Import the function from generic_utils
+        from generic_utils import get_annotation_value_pairs
+        
+        try:
+            pairs = get_annotation_value_pairs(annotation, value)
+            if not pairs:
+                return False
+            
+            for generic_info, concrete_value in pairs:
+                self._process_generic_value_pair(generic_info, concrete_value, constraints)
+            
+            return True
+        except Exception:
+            # If anything goes wrong, fall back to original approach
+            return False
+    
+    def _try_direct_generic_structure_matching(self, annotation: Any, value: Any, constraints: List[Constraint]) -> bool:
+        """Try to match generic structures directly (e.g., Generic[A, B] with Generic[int, str])."""
+        
+        ann_info = self.generic_utils.get_generic_info(annotation)
+        val_info = self.generic_utils.get_instance_generic_info(value)
+        
+        # Both must be generic and have compatible origins
+        if not (ann_info.is_generic and val_info.is_generic):
+            return False
+            
+        # Check if origins are compatible
+        if not (ann_info.origin == val_info.origin or 
+                (hasattr(ann_info.origin, '__name__') and hasattr(val_info.origin, '__name__') and
+                 ann_info.origin.__name__ == val_info.origin.__name__)):
+            return False
+        
+        # Must have matching number of type arguments
+        if len(ann_info.concrete_args) != len(val_info.concrete_args):
+            return False
+        
+        # Match each type argument pair
+        found_constraints = False
+        for ann_arg, val_arg in zip(ann_info.concrete_args, val_info.concrete_args):
+            if self._match_generic_arg_pair(ann_arg, val_arg, constraints):
+                found_constraints = True
+        
+        return found_constraints
+    
+    def _match_generic_arg_pair(self, ann_arg: Any, val_arg: Any, constraints: List[Constraint]) -> bool:
+        """Match a pair of generic arguments and extract constraints."""
+        
+        # Case 1: annotation has TypeVar, value has concrete type
+        if isinstance(ann_arg.origin, TypeVar) and not isinstance(val_arg.origin, TypeVar):
+            constraints.append(Constraint(ann_arg.origin, val_arg.resolved_type, Variance.INVARIANT))
+            return True
+        
+        # Case 2: both have the same structure - recursively match
+        elif (ann_arg.origin == val_arg.origin and 
+              len(ann_arg.concrete_args) == len(val_arg.concrete_args) and
+              ann_arg.concrete_args and val_arg.concrete_args):
+            found_any = False
+            for sub_ann, sub_val in zip(ann_arg.concrete_args, val_arg.concrete_args):
+                if self._match_generic_arg_pair(sub_ann, sub_val, constraints):
+                    found_any = True
+            return found_any
+        
+        # Case 3: annotation has nested TypeVar, value has concrete structure
+        elif ann_arg.concrete_args and isinstance(ann_arg.concrete_args[0].origin, TypeVar):
+            # For example: list[B] matches list[str], extract B -> str
+            if (ann_arg.origin == val_arg.origin and val_arg.concrete_args and 
+                not isinstance(val_arg.concrete_args[0].origin, TypeVar)):
+                typevar = ann_arg.concrete_args[0].origin
+                concrete_type = val_arg.concrete_args[0].resolved_type
+                constraints.append(Constraint(typevar, concrete_type, Variance.COVARIANT))
+                return True
+        
+        return False
+    
+    def _process_generic_value_pair(self, generic_info: Any, concrete_value: Any, constraints: List[Constraint]):
+        """Process a (GenericInfo, value) pair and extract constraints, with recursive drilling."""
+        
+        if isinstance(generic_info.origin, TypeVar):
+            # Direct TypeVar - we need to find what this TypeVar should actually represent
+            # by looking at the context of the annotation structure
+            self._resolve_typevar_from_context(generic_info, concrete_value, constraints)
+        else:
+            # Complex GenericInfo - try to recursively extract
+            self._collect_constraints_internal(generic_info.resolved_type, concrete_value, constraints)
+    
+    def _should_drill_deeper(self, generic_info: Any, concrete_value: Any) -> bool:
+        """Check if we should drill deeper into the structure instead of using the surface type."""
+        
+        # If the GenericInfo has concrete_args, it means it represents a complex type like List[Box[A]]
+        # and we should try to drill into the structure
+        if generic_info.concrete_args:
+            return True
+        
+        # If the concrete value is a complex generic type and we have a simple TypeVar,
+        # we might want to drill into the value's generic structure
+        value_info = self.generic_utils.get_instance_generic_info(concrete_value)
+        if value_info.is_generic:
+            return True
+        
+        return False
+    
+    def _resolve_typevar_from_context(self, generic_info: Any, concrete_value: Any, constraints: List[Constraint]):
+        """Resolve TypeVar constraints by finding what the TypeVar should represent in context."""
+        
+        typevar = generic_info.origin
+        
+        # The key insight: generic_info represents a TypeVar that was extracted from some position
+        # in the annotation structure. We need to find what annotation structure should be used
+        # to process the concrete_value.
+        
+        # For now, let's try a different approach: 
+        # If we have a TypeVar and a complex value (like a list of generic objects),
+        # try to infer the TypeVar from the elements of the value
+        
+        if isinstance(concrete_value, list) and concrete_value:
+            # We have A -> [Box[int](...), Box[int](...)]
+            # Let's extract the types from the Box[int] elements
+            element_types = set()
+            for element in concrete_value:
+                element_info = self.generic_utils.get_instance_generic_info(element)
+                if element_info.is_generic and element_info.concrete_args:
+                    # Extract the deepest concrete args (e.g., int from Box[int])
+                    deepest_args = self._extract_deepest_type_args(element_info)
+                    element_types.update(deepest_args)
+                else:
+                    element_types.add(type(element))
+            
+            if element_types:
+                # Create a union type from all the element types
+                from generic_utils import create_union_if_needed
+                union_type = create_union_if_needed(element_types)
+                constraints.append(Constraint(typevar, union_type, Variance.COVARIANT))
+                return
+        
+        elif hasattr(concrete_value, '__dict__') or hasattr(concrete_value, '__pydantic_fields__'):
+            # For other generic objects, try to extract from their structure
+            value_info = self.generic_utils.get_instance_generic_info(concrete_value)
+            if value_info.is_generic and value_info.concrete_args:
+                deepest_args = self._extract_deepest_type_args(value_info)
+                if deepest_args:
+                    from generic_utils import create_union_if_needed
+                    union_type = create_union_if_needed(set(deepest_args))
+                    constraints.append(Constraint(typevar, union_type, Variance.COVARIANT))
+                    return
+        
+        # Fallback: bind to the type of the concrete value
+        concrete_type = type(concrete_value)
+        constraints.append(Constraint(typevar, concrete_type, Variance.COVARIANT))
+    
+    def _extract_deepest_type_args(self, generic_info: Any) -> List[type]:
+        """Extract the deepest concrete type arguments from a GenericInfo structure."""
+        result = []
+        
+        if not generic_info.concrete_args:
+            # No concrete args - return the origin if it's a concrete type
+            if not isinstance(generic_info.origin, TypeVar):
+                result.append(generic_info.origin)
+            return result
+        
+        for arg_info in generic_info.concrete_args:
+            if isinstance(arg_info.origin, TypeVar):
+                # This is still a TypeVar - can't extract concrete type
+                continue
+            elif arg_info.concrete_args:
+                # Recursively extract from deeper structure
+                result.extend(self._extract_deepest_type_args(arg_info))
+            else:
+                # This is a concrete type
+                result.append(arg_info.origin)
+        
+        return result
+    
+    def _drill_into_generic_structure(self, generic_info: Any, concrete_value: Any, constraints: List[Constraint]):
+        """Drill deeper into generic structures to find the actual TypeVar bindings."""
+        
+        # The generic_info represents something like List[Box[A]] 
+        # The concrete_value is something like [Box[int](item=1), Box[int](item=2)]
+        # We want to extract that A should bind to int
+        
+        if generic_info.concrete_args:
+            # The generic_info has structure - use it as an annotation for recursive extraction
+            annotation_to_use = generic_info.resolved_type
+            self._collect_constraints_internal(annotation_to_use, concrete_value, constraints)
+        else:
+            # Simple TypeVar but complex value - try to extract from the value's structure
+            value_info = self.generic_utils.get_instance_generic_info(concrete_value)
+            if value_info.is_generic and value_info.concrete_args:
+                # Extract the most specific type from the value
+                # For example, if concrete_value is Box[int], extract int
+                deepest_args = value_info.concrete_args
+                while deepest_args and deepest_args[0].concrete_args:
+                    deepest_args = deepest_args[0].concrete_args
+                
+                if deepest_args:
+                    for arg_info in deepest_args:
+                        if isinstance(arg_info.origin, TypeVar):
+                            constraints.append(Constraint(generic_info.origin, arg_info.resolved_type, Variance.COVARIANT))
+                        else:
+                            constraints.append(Constraint(generic_info.origin, arg_info.resolved_type, Variance.COVARIANT))
     
     def _extract_from_nested_structure(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Fallback method to extract constraints from nested structures."""
@@ -599,14 +829,14 @@ class UnificationEngine:
         
         return concrete_type
 
-    def _match_value_to_union_alternatives(self, value: Any, union_alternatives: Tuple, constraints: List[Constraint]):
+    def _match_value_to_union_alternatives(self, value: Any, union_alternatives: List, constraints: List[Constraint]):
         """Match a value against union alternatives and collect constraints."""
         value_type = type(value)
         
         # First, check if the value exactly matches any concrete (non-TypeVar) type in the union
         # This handles cases like Optional[A] where None should match the concrete None type
-        for alt in union_alternatives:
-            if not isinstance(alt, TypeVar) and alt == value_type:
+        for alt_info in union_alternatives:
+            if not isinstance(alt_info.origin, TypeVar) and alt_info.resolved_type == value_type:
                 # Perfect match with concrete type - no constraints needed
                 return
         
@@ -614,22 +844,23 @@ class UnificationEngine:
         # by looking at existing constraints
         existing_bindings = {}
         for constraint in constraints:
-            if constraint.typevar in union_alternatives:
-                # Only consider "strong" evidence (invariant constraints like from Dict keys/values)
-                if constraint.variance == Variance.INVARIANT:
-                    if constraint.typevar not in existing_bindings:
-                        existing_bindings[constraint.typevar] = set()
-                    existing_bindings[constraint.typevar].add(constraint.concrete_type)
+            for alt_info in union_alternatives:
+                if isinstance(alt_info.origin, TypeVar) and constraint.typevar == alt_info.origin:
+                    # Only consider "strong" evidence (invariant constraints like from Dict keys/values)
+                    if constraint.variance == Variance.INVARIANT:
+                        if constraint.typevar not in existing_bindings:
+                            existing_bindings[constraint.typevar] = set()
+                        existing_bindings[constraint.typevar].add(constraint.concrete_type)
         
         # Try to assign this value to the TypeVar that already has evidence for this type
         matched_typevar = None
         
-        for alt in union_alternatives:
-            if isinstance(alt, TypeVar) and alt in existing_bindings:
-                existing_types = existing_bindings[alt]
+        for alt_info in union_alternatives:
+            if isinstance(alt_info.origin, TypeVar) and alt_info.origin in existing_bindings:
+                existing_types = existing_bindings[alt_info.origin]
                 if len(existing_types) == 1 and value_type in existing_types:
                     # Perfect match - this TypeVar already has evidence for this exact type
-                    matched_typevar = alt
+                    matched_typevar = alt_info.origin
                     break
         
         # If we found a perfect match, use it
@@ -640,16 +871,16 @@ class UnificationEngine:
         
         # No perfect match found - check if we can rule out some TypeVars
         ruled_out = set()
-        for alt in union_alternatives:
-            if isinstance(alt, TypeVar) and alt in existing_bindings:
-                existing_types = existing_bindings[alt]
+        for alt_info in union_alternatives:
+            if isinstance(alt_info.origin, TypeVar) and alt_info.origin in existing_bindings:
+                existing_types = existing_bindings[alt_info.origin]
                 if len(existing_types) == 1 and value_type not in existing_types:
                     # This TypeVar has strong evidence for a different type
-                    ruled_out.add(alt)
+                    ruled_out.add(alt_info.origin)
         
         # Add constraints for remaining candidates
-        candidates = [alt for alt in union_alternatives 
-                     if isinstance(alt, TypeVar) and alt not in ruled_out]
+        candidates = [alt_info.origin for alt_info in union_alternatives 
+                     if isinstance(alt_info.origin, TypeVar) and alt_info.origin not in ruled_out]
         
         if candidates:
             # If we have candidates that aren't ruled out, use covariant constraints
@@ -659,9 +890,9 @@ class UnificationEngine:
         else:
             # Fallback: add constraints for all TypeVar alternatives with invariant variance
             # This will likely cause conflicts but that's better than losing information
-            for alt in union_alternatives:
-                if isinstance(alt, TypeVar):
-                    constraints.append(Constraint(alt, value_type, Variance.INVARIANT))
+            for alt_info in union_alternatives:
+                if isinstance(alt_info.origin, TypeVar):
+                    constraints.append(Constraint(alt_info.origin, value_type, Variance.INVARIANT))
 
 
 def _find_common_supertype(types_list: List[type]) -> type:
@@ -728,16 +959,28 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
     
     if isinstance(annotation, TypeVar):
         if annotation in bindings:
-            return bindings[annotation]
+            bound_value = bindings[annotation]
+            # If bound value is GenericInfo, extract its resolved_type
+            if hasattr(bound_value, 'resolved_type'):
+                return bound_value.resolved_type
+            return bound_value
         else:
             # Instead of failing, return the TypeVar as-is - this will be caught later
             return annotation
     
     origin = get_generic_origin(annotation)
-    args = get_concrete_args(annotation)
+    args_info = get_concrete_args(annotation)
     
-    if not origin or not args:
+    if not origin or not args_info:
         return annotation
+    
+    # Extract raw types from GenericInfo objects
+    args = []
+    for arg_info in args_info:
+        if hasattr(arg_info, 'resolved_type'):
+            args.append(arg_info.resolved_type)
+        else:
+            args.append(arg_info)
     
     # Handle Union types specially - only include bound TypeVars
     if origin is Union:
@@ -859,9 +1102,16 @@ def _has_unbound_typevars(annotation: Any) -> bool:
     
     # Use generic_utils for consistent handling
     origin = get_generic_origin(annotation)
-    args = get_concrete_args(annotation)
+    args_info = get_concrete_args(annotation)
     
-    if args:
-        return any(_has_unbound_typevars(arg) for arg in args)
+    if args_info:
+        # Extract resolved types from GenericInfo objects and recursively check
+        for arg_info in args_info:
+            if hasattr(arg_info, 'resolved_type'):
+                if _has_unbound_typevars(arg_info.resolved_type):
+                    return True
+            elif _has_unbound_typevars(arg_info):
+                return True
+        return False
     
     return False 

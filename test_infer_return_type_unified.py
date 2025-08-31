@@ -934,7 +934,7 @@ def test_multiple_nested_typevars():
     def process_pydantic_model(data: PydanticModel[A, list[B]]) -> B: ...
 
     t = infer_return_type(process_pydantic_model, PydanticModel[int, list[str]](a=1, b=["hello", "world"]))
-    assert t.resolved_type is str
+    assert t is str
 
 
 def test_deeply_nested_with_different_branching():
