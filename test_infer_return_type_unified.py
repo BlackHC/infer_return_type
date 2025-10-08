@@ -1383,3 +1383,263 @@ def test_many_typevars_scalability():
     elapsed = time.time() - start
     
     assert elapsed < 0.5  # Should be fast even with many TypeVars
+
+
+# =============================================================================
+# ARCHITECTURAL TESTS
+# =============================================================================
+
+def test_architectural_improvements():
+    """Demonstrate architectural improvements - unified interface."""
+    
+    from unification_type_inference import UnificationEngine
+    from generic_utils import GenericExtractor
+    
+    engine = UnificationEngine()
+    
+    # Show that we have a clean extractor interface through generic_utils
+    assert len(engine.generic_utils.extractors) >= 3  # Pydantic, Dataclass, Builtin
+    
+    # Each extractor implements the same interface
+    for extractor in engine.generic_utils.extractors:
+        assert hasattr(extractor, 'can_handle_annotation')
+        assert hasattr(extractor, 'can_handle_instance')
+        assert hasattr(extractor, 'extract_from_annotation')
+        assert hasattr(extractor, 'extract_from_instance')
+    
+    # Test that we can easily add new extractors by subclassing
+    class CustomExtractor(GenericExtractor):
+        def can_handle_annotation(self, annotation):
+            return False  # dummy implementation
+        
+        def can_handle_instance(self, instance):
+            return False
+        
+        def extract_from_annotation(self, annotation):
+            from generic_utils import GenericInfo
+            return GenericInfo()
+        
+        def extract_from_instance(self, instance):
+            from generic_utils import GenericInfo
+            return GenericInfo()
+    
+    # Can be easily added to the system
+    custom_extractor = CustomExtractor()
+    engine.generic_utils.extractors.append(custom_extractor)
+
+
+# =============================================================================
+# NESTED FIELD EXTRACTION TESTS (from original implementation)
+# =============================================================================
+
+def test_nested_list_field_extraction():
+    """Test that TypeVars can be inferred from nested list fields."""
+    
+    @dataclass
+    class Container(typing.Generic[A]):
+        nested_items: List[A]  # The TypeVar A is nested inside a List
+    
+    def extract_item_type(container: Container[A]) -> A: ...
+    
+    # Create instance without explicit type parameters
+    container = Container(nested_items=[1, 2, 3])
+    
+    # Should infer A = int from the nested list elements
+    result_type = infer_return_type(extract_item_type, container)
+    assert result_type is int
+
+
+def test_nested_dict_field_extraction():
+    """Test that TypeVars can be inferred from nested dict fields."""
+    
+    @dataclass
+    class DataStore(typing.Generic[A, B]):
+        data_map: Dict[str, List[A]]  # A is nested: str -> List[A]
+        metadata: Dict[A, B]          # Both A and B are in dict structure
+    
+    def get_data_type(store: DataStore[A, B]) -> A: ...
+    def get_metadata_type(store: DataStore[A, B]) -> B: ...
+    
+    # Create instance without explicit type parameters
+    store = DataStore(
+        data_map={"items": [1, 2, 3], "more": [4, 5]},
+        metadata={42: "hello", 99: "world"}
+    )
+    
+    # Should infer A = int from dict values' list elements AND dict keys
+    data_type = infer_return_type(get_data_type, store)
+    assert data_type is int
+    
+    # Should infer B = str from dict values
+    metadata_type = infer_return_type(get_metadata_type, store)
+    assert metadata_type is str
+
+
+def test_deeply_nested_field_extraction():
+    """Test that TypeVars can be inferred from deeply nested structures."""
+    
+    @dataclass
+    class DeepContainer(typing.Generic[A]):
+        deep_data: Dict[str, List[Dict[str, A]]]  # A is deeply nested
+    
+    def extract_deep_type(container: DeepContainer[A]) -> A: ...
+    
+    # Create instance with deeply nested structure
+    container = DeepContainer(
+        deep_data={
+            "section1": [
+                {"item1": 42, "item2": 100},
+                {"item3": 200}
+            ],
+            "section2": [
+                {"item4": 300}
+            ]
+        }
+    )
+    
+    # Should infer A = int from deeply nested dict values
+    result_type = infer_return_type(extract_deep_type, container)
+    assert result_type is int
+
+
+def test_optional_nested_field_extraction():
+    """Test that TypeVars can be inferred from Optional nested fields."""
+    
+    @dataclass  
+    class OptionalContainer(typing.Generic[A]):
+        maybe_items: Optional[List[A]]  # A is nested inside Optional[List[A]]
+    
+    def extract_optional_type(container: OptionalContainer[A]) -> A: ...
+    
+    # Case 1: Non-None optional field
+    container1 = OptionalContainer(maybe_items=["hello", "world"])
+    result_type1 = infer_return_type(extract_optional_type, container1)
+    assert result_type1 is str
+    
+    # Case 2: None optional field should fail (no type info available)
+    container2 = OptionalContainer(maybe_items=None)
+    with pytest.raises(Exception):  # Should fail due to lack of type information
+        infer_return_type(extract_optional_type, container2)
+
+
+def test_mixed_nested_structures():
+    """Test TypeVar inference from mixed nested structures."""
+    
+    @dataclass
+    class ComplexContainer(typing.Generic[A, B]):
+        lists_of_a: List[List[A]]           # A doubly nested in lists
+        dict_to_b: Dict[str, B]             # B nested in dict values
+        optional_a_list: Optional[List[A]]  # A nested in Optional[List[A]]
+    
+    def extract_a_type(container: ComplexContainer[A, B]) -> A: ...
+    def extract_b_type(container: ComplexContainer[A, B]) -> B: ...
+    
+    container = ComplexContainer(
+        lists_of_a=[[1, 2], [3, 4, 5]],
+        dict_to_b={"key1": 3.14, "key2": 2.71},
+        optional_a_list=[10, 20, 30]
+    )
+    
+    # Should infer A = int from multiple nested sources
+    a_type = infer_return_type(extract_a_type, container)
+    assert a_type is int
+    
+    # Should infer B = float from dict values
+    b_type = infer_return_type(extract_b_type, container)
+    assert b_type is float
+
+
+def test_pydantic_nested_field_extraction():
+    """Test nested field extraction works with Pydantic models too."""
+    
+    class NestedModel(BaseModel, typing.Generic[A]):
+        nested_data: List[Dict[str, A]]  # A is nested inside List[Dict[str, A]]
+    
+    def extract_nested_type(model: NestedModel[A]) -> A: ...
+    
+    # Create Pydantic instance without explicit type parameters
+    model = NestedModel(
+        nested_data=[
+            {"item1": True, "item2": False},
+            {"item3": True}
+        ]
+    )
+    
+    # Should infer A = bool from nested dict values
+    result_type = infer_return_type(extract_nested_type, model)
+    assert result_type is bool
+
+
+def test_inheritance_with_nested_extraction():
+    """Test nested extraction works with inheritance chains."""
+    
+    @dataclass
+    class BaseContainer(typing.Generic[A]):
+        base_data: List[A]
+    
+    @dataclass
+    class ExtendedContainer(BaseContainer[A], typing.Generic[A, B]):
+        extra_data: Dict[str, B]
+    
+    def extract_base_type(container: ExtendedContainer[A, B]) -> A: ...
+    def extract_extra_type(container: ExtendedContainer[A, B]) -> B: ...
+    
+    container = ExtendedContainer(
+        base_data=[1, 2, 3],
+        extra_data={"key": "value"}
+    )
+    
+    # Should infer A = int from inherited base_data list
+    base_type = infer_return_type(extract_base_type, container)
+    assert base_type is int
+    
+    # Should infer B = str from extra_data dict values
+    extra_type = infer_return_type(extract_extra_type, container)
+    assert extra_type is str
+
+
+def test_multiple_typevar_same_nested_structure():
+    """Test multiple TypeVars in the same nested structure."""
+    
+    @dataclass
+    class MultiVarContainer(typing.Generic[A, B]):
+        pair_lists: List[Dict[A, B]]  # Both A and B nested in same structure
+    
+    def extract_key_type(container: MultiVarContainer[A, B]) -> A: ...
+    def extract_value_type(container: MultiVarContainer[A, B]) -> B: ...
+    
+    container = MultiVarContainer(
+        pair_lists=[
+            {1: "one", 2: "two"},
+            {3: "three", 4: "four"}
+        ]
+    )
+    
+    # Should infer A = int from dict keys
+    key_type = infer_return_type(extract_key_type, container)
+    assert key_type is int
+    
+    # Should infer B = str from dict values
+    value_type = infer_return_type(extract_value_type, container)
+    assert value_type is str
+
+
+def test_comparison_with_explicit_types():
+    """Test that nested extraction gives same results as explicit type parameters."""
+    
+    @dataclass
+    class TestContainer(typing.Generic[A]):
+        nested_list: List[A]
+    
+    def extract_type(container: TestContainer[A]) -> A: ...
+    
+    # Create with explicit type parameters
+    explicit_container = TestContainer[int](nested_list=[1, 2, 3])
+    explicit_result = infer_return_type(extract_type, explicit_container)
+    
+    # Create without explicit type parameters (relies on nested extraction)
+    inferred_container = TestContainer(nested_list=[1, 2, 3])
+    inferred_result = infer_return_type(extract_type, inferred_container)
+    
+    # Both should give the same result
+    assert explicit_result == inferred_result == int
