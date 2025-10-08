@@ -91,10 +91,10 @@ def test_single_typevar_errors():
     t = infer_return_type(head, [], type_overrides={A: int})
     assert t is int
     
-    # Ambiguous same TypeVar binding should fail
+    # Conflicting same TypeVar binding now creates union (improved behavior)
     def same(a: A, b: A) -> bool: ...
-    with pytest.raises(TypeInferenceError):
-        infer_return_type(same, 1, 'x')
+    # This now returns int | str instead of failing
+    # See test_conflicting_typevar_should_create_union for details
 
 
 def test_constrained_and_bounded_typevars():
@@ -1009,7 +1009,6 @@ def test_variance_and_contravariance_limitations():
 # KNOWN WEAKNESSES - TESTS TO SKIP (Need fixing before production)
 # =============================================================================
 
-@pytest.mark.skip(reason="WEAKNESS: Unification fails on conflicting TypeVar bindings instead of creating unions")
 def test_conflicting_typevar_should_create_union():
     """
     Test that conflicting TypeVar bindings should create unions, not fail.
@@ -1029,7 +1028,6 @@ def test_conflicting_typevar_should_create_union():
     assert set(union_args) == {int, str}
 
 
-@pytest.mark.skip(reason="WEAKNESS: Unification includes None in result instead of filtering it out")  
 def test_none_filtering_in_optional():
     """
     Test that None values in Optional[A] should not bind A to None.
@@ -1043,7 +1041,6 @@ def test_none_filtering_in_optional():
     assert result is int  # Should be int, not int | None
 
 
-@pytest.mark.skip(reason="WEAKNESS: Unification fails on complex nested union structures")
 def test_complex_union_structure():
     """
     Test complex union structures like Union[A, List[A], Dict[str, A]].

@@ -188,16 +188,27 @@ class UnificationEngine:
             try:
                 temp_constraints = []
                 if isinstance(alternative_info.origin, TypeVar):
-                    # Direct TypeVar alternative
-                    value_type = type(value)
-                    temp_constraints.append(Constraint(alternative_info.origin, value_type, Variance.INVARIANT))
+                    # Direct TypeVar alternative - use inferred type from value
+                    concrete_type = _infer_type_from_value(value)
+                    temp_constraints.append(Constraint(alternative_info.origin, concrete_type, Variance.INVARIANT))
                 else:
                     # Resolved type alternative
                     alternative = alternative_info.resolved_type
                     self._collect_constraints_internal(alternative, value, temp_constraints)
                 
-                # Score this alternative (prefer more specific constraints)
+                # Score this alternative - prefer structured matches over direct TypeVar matches
+                # Structured matches (like List[A], Dict[K,V]) provide more specific constraints
                 score = len(temp_constraints)
+                
+                # Bonus points for matching structured types (not just bare TypeVar)
+                if not isinstance(alternative_info.origin, TypeVar):
+                    # Check if the alternative structure matches the value structure
+                    alt_origin = get_generic_origin(alternative_info.resolved_type)
+                    value_type = type(value)
+                    if alt_origin and alt_origin == value_type:
+                        # Perfect structure match - prefer this
+                        score += 100
+                
                 if score > best_score:
                     best_score = score
                     best_constraints = temp_constraints
@@ -769,16 +780,6 @@ class UnificationEngine:
         # Different constraints - analyze variance and context
         variances = [c.variance for c in constraints]
         
-        # Handle None values: Instead of ignoring None, include it in the union when appropriate
-        none_types = [c for c in constraints if c.concrete_type == type(None)]
-        non_none_constraints = [c for c in constraints if c.concrete_type != type(None)]
-        
-        if none_types and non_none_constraints:
-            # Both None and non-None types present - create union including None
-            non_none_types = [c.concrete_type for c in non_none_constraints]
-            all_types = set(non_none_types) | {type(None)}
-            return self._check_typevar_bounds(typevar, create_union_if_needed(all_types))
-        
         # Key insight: distinguish between "forced unions" and "conflicting sources"
         # Forced unions: single container with mixed types (List[A] with mixed elements)
         # Conflicting sources: multiple separate containers claiming different types for same TypeVar
@@ -791,12 +792,14 @@ class UnificationEngine:
         if covariant_constraints and not invariant_constraints:
             return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
         
-        # If we have multiple invariant constraints (like multiple Dict[A,B] or List[A]), this is a conflict
+        # If we have multiple invariant constraints with different types, form a union
+        # This handles cases like: def identity(a: A, b: A) -> A with identity(1, 'x')
+        # Result should be int | str, not an error
         if len(invariant_constraints) > 1:
             invariant_types = [c.concrete_type for c in invariant_constraints]
             if len(set(invariant_types)) > 1:
-                # True conflict - multiple independent sources claiming different types
-                raise UnificationError(f"Conflicting type assignments for {typevar}: {invariant_constraints}")
+                # Multiple independent sources with different types - create union
+                return self._check_typevar_bounds(typevar, create_union_if_needed(set(invariant_types)))
         
         # Mixed variance - default to union formation
         return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
