@@ -1003,3 +1003,383 @@ def test_variance_and_contravariance_limitations():
     
     # But more complex variance scenarios might have limitations
     # This is documenting current behavior rather than testing a specific limitation
+
+
+# =============================================================================
+# KNOWN WEAKNESSES - TESTS TO SKIP (Need fixing before production)
+# =============================================================================
+
+@pytest.mark.skip(reason="WEAKNESS: Unification fails on conflicting TypeVar bindings instead of creating unions")
+def test_conflicting_typevar_should_create_union():
+    """
+    Test that conflicting TypeVar bindings should create unions, not fail.
+    
+    This is a CRITICAL weakness - Original and CSP both handle this correctly.
+    """
+    def identity(a: A, b: A) -> A: ...
+    
+    # This currently fails but SHOULD return int | str
+    result = infer_return_type(identity, 1, 'x')
+    
+    # Should be union type
+    import types
+    origin = typing.get_origin(result)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(result)
+    assert set(union_args) == {int, str}
+
+
+@pytest.mark.skip(reason="WEAKNESS: Unification includes None in result instead of filtering it out")  
+def test_none_filtering_in_optional():
+    """
+    Test that None values in Optional[A] should not bind A to None.
+    
+    This is different behavior from Original and CSP - they filter None out correctly.
+    """
+    def process_dict_with_nones(d: Dict[str, Optional[A]]) -> A: ...
+    
+    # With None values mixed in, should still return int, not int | None
+    result = infer_return_type(process_dict_with_nones, {'a': 1, 'b': None, 'c': 2})
+    assert result is int  # Should be int, not int | None
+
+
+@pytest.mark.skip(reason="WEAKNESS: Unification fails on complex nested union structures")
+def test_complex_union_structure():
+    """
+    Test complex union structures like Union[A, List[A], Dict[str, A]].
+    
+    CSP handles this correctly, unification fails with conflicting type assignments.
+    """
+    def extract_value(data: Dict[str, Union[A, List[A], Dict[str, A]]]) -> A: ...
+    
+    test_data = {
+        'single': 42,
+        'list': [43, 44],
+        'nested': {'value': 45}
+    }
+    
+    # Should extract A = int from all three positions
+    result = infer_return_type(extract_value, test_data)
+    assert result is int
+
+
+@pytest.mark.skip(reason="DESIGN DECISION: Bounded TypeVar strictness - int doesn't satisfy float bound")
+def test_bounded_typevar_relaxed():
+    """
+    Test whether bounded TypeVars should be relaxed for practical use.
+    
+    This is technically correct per PEP 484, but Python's runtime is more lenient.
+    Decision needed: should int satisfy bound=float?
+    """
+    Numeric = TypeVar('Numeric', bound=float)
+    def process_numeric(x: Numeric) -> Numeric: ...
+    
+    # int is not technically a subtype of float in the type system
+    # But in practice Python accepts int where float is expected
+    result = infer_return_type(process_numeric, 1)
+    assert result is int
+
+
+@pytest.mark.skip(reason="BUG: Set[Union[A, B]] tuple access fails")
+def test_set_union_distribution_fixed():
+    """
+    Test Set[Union[A, B]] distribution among TypeVars.
+    
+    Currently fails with TypeError when accessing tuple args.
+    """
+    def process_union_set(s: Set[Union[A, B]]) -> Tuple[Set[A], Set[B]]: ...
+    
+    result = infer_return_type(process_union_set, {1, 'a', 2, 'b'})
+    
+    # Should distribute int and str between A and B
+    tuple_args = typing.get_args(result)
+    assert len(tuple_args) == 2
+    
+    # Both should be sets
+    origin1 = typing.get_origin(tuple_args[0])
+    origin2 = typing.get_origin(tuple_args[1])
+    assert origin1 is set and origin2 is set
+
+
+# =============================================================================
+# MISSING TESTS FROM CSP - VARIANCE AND CONSTRAINTS
+# =============================================================================
+
+@pytest.mark.skip(reason="TODO: Port variance testing from CSP implementation")
+def test_covariant_variance_explicit():
+    """
+    Test explicit covariant variance handling.
+    
+    CSP has extensive variance tests that unification lacks.
+    """
+    class Animal: pass
+    class Dog(Animal): pass
+    
+    def covariant_test(pets: List[A]) -> A: ...
+    
+    # List is covariant - Dog list should allow supertype inference
+    dog_list = [Dog(), Dog()]
+    result = infer_return_type(covariant_test, dog_list)
+    
+    # Could be Dog (most specific) or Animal or object (supertypes)
+    assert result in [Dog, Animal, object]
+
+
+@pytest.mark.skip(reason="TODO: Port contravariant testing from CSP")
+def test_contravariant_variance_explicit():
+    """
+    Test contravariant variance in Callable parameters.
+    
+    Callable is contravariant in parameter types, covariant in return type.
+    """
+    def contravariant_test(func: Callable[[A], str]) -> A: ...
+    
+    def object_to_str(x: object) -> str:
+        return str(x)
+    
+    # Callable[[object], str] where object is the most general parameter type
+    result = infer_return_type(contravariant_test, object_to_str)
+    assert result is object
+
+
+@pytest.mark.skip(reason="TODO: Port invariant testing from CSP")
+def test_invariant_dict_keys():
+    """
+    Test invariant variance for Dict keys.
+    
+    Dict keys are invariant - must be exact type match.
+    """
+    class StringKey(str): pass
+    
+    def invariant_test(mapping: Dict[A, int]) -> A: ...
+    
+    # Should be exactly the key type used, not a supertype
+    string_dict = {'key': 1}
+    result1 = infer_return_type(invariant_test, string_dict)
+    assert result1 is str
+    
+    custom_dict = {StringKey('key'): 1}
+    result2 = infer_return_type(invariant_test, custom_dict)
+    assert result2 is StringKey
+
+
+@pytest.mark.skip(reason="TODO: Port constraint system testing from CSP")
+def test_constraint_priority_resolution():
+    """
+    Test that constraints are resolved with proper priority.
+    
+    CSP has priority-based constraint resolution that's missing in unification.
+    """
+    # type_overrides should have highest priority
+    def process_list(items: List[A]) -> A: ...
+    
+    # Even though we have int values, override should win
+    result = infer_return_type(process_list, [1, 2, 3], type_overrides={A: str})
+    assert result is str
+
+
+@pytest.mark.skip(reason="TODO: Port domain-based reasoning from CSP")
+def test_domain_filtering_with_constraints():
+    """
+    Test domain filtering based on multiple constraints.
+    
+    CSP uses domain-based reasoning to filter possible types.
+    """
+    T_BOUNDED = TypeVar('T_BOUNDED', bound=int)
+    
+    def bounded_test(x: T_BOUNDED, y: T_BOUNDED) -> T_BOUNDED: ...
+    
+    # Both values must satisfy the bound
+    result = infer_return_type(bounded_test, True, False)
+    assert result is bool  # bool is subtype of int
+
+
+@pytest.mark.skip(reason="TODO: Port union distribution tests from CSP")
+def test_union_or_logic_distribution():
+    """
+    Test Union types as OR logic in constraint satisfaction.
+    
+    Union[List[A], Set[A]] means A can be inferred from either branch.
+    """
+    def process_union(data: Union[List[A], Set[A]]) -> A: ...
+    
+    # List branch
+    result1 = infer_return_type(process_union, [1, 2, 3])
+    assert result1 is int
+    
+    # Set branch  
+    result2 = infer_return_type(process_union, {1, 2, 3})
+    assert result2 is int
+
+
+@pytest.mark.skip(reason="TODO: Port subset constraint testing from CSP")
+def test_subset_constraints():
+    """
+    Test subset constraints like {A, B} ⊇ {int, str}.
+    
+    CSP explicitly models subset constraints for union types.
+    """
+    def process_set_union(s: Set[Union[A, B]]) -> Tuple[A, B]: ...
+    
+    # Set with mixed types creates subset constraint
+    mixed_set = {1, 'hello', 2, 'world'}
+    result = infer_return_type(process_set_union, mixed_set)
+    
+    # Should distribute types among A and B
+    assert typing.get_origin(result) is tuple
+
+
+# =============================================================================
+# EDGE CASES THAT SHOULD WORK BUT MIGHT NOT
+# =============================================================================
+
+@pytest.mark.skip(reason="INVESTIGATE: Multiple conflicting invariant constraints")
+def test_multiple_invariant_conflicts():
+    """
+    Test behavior when multiple invariant constraints conflict.
+    
+    Should this create a union or fail?
+    """
+    def process_containers(d1: Dict[A, str], d2: Dict[A, str], d3: Dict[A, str]) -> A: ...
+    
+    # Three dicts with different key types (invariant position)
+    result = infer_return_type(process_containers, 
+                               {1: 'a'}, 
+                               {'x': 'b'}, 
+                               {3.14: 'c'})
+    
+    # Should this be int | str | float, or should it fail?
+    origin = typing.get_origin(result)
+    import types
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+
+
+@pytest.mark.skip(reason="INVESTIGATE: Nested invariant+covariant mixing")
+def test_nested_variance_mixing():
+    """
+    Test mixing invariant and covariant variance in nested structures.
+    
+    Dict[A, List[A]] - A is invariant in keys, covariant in list elements.
+    """
+    def process_mixed_variance(d: Dict[A, List[A]]) -> A: ...
+    
+    # Keys must match (invariant), but list can have subtypes (covariant)
+    test_data = {
+        1: [1, 2, 3],
+        2: [4, 5, 6]
+    }
+    
+    result = infer_return_type(process_mixed_variance, test_data)
+    assert result is int
+
+
+@pytest.mark.skip(reason="INVESTIGATE: TypeVar appearing in both covariant and contravariant positions")
+def test_typevar_multiple_variance_positions():
+    """
+    Test TypeVar appearing in positions with different variance.
+    
+    Callable[[List[A]], A] - A is covariant in List, covariant in return position.
+    """
+    def complex_func(callback: Callable[[List[A]], A], default: A) -> A: ...
+    
+    def list_to_int(items: List[int]) -> int:
+        return sum(items)
+    
+    # Should infer A = int from both positions
+    result = infer_return_type(complex_func, list_to_int, 42)
+    assert result is int
+
+
+# =============================================================================
+# DEBUGGING AND ERROR MESSAGE TESTS  
+# =============================================================================
+
+@pytest.mark.skip(reason="TODO: Add constraint tracing for debugging")
+def test_constraint_trace_on_failure():
+    """
+    Test that failures include constraint traces for debugging.
+    
+    CSP provides detailed constraint information on failures.
+    """
+    def conflicting_example(a: List[A], b: List[A]) -> A: ...
+    
+    try:
+        infer_return_type(conflicting_example, [1], ["x"])
+        assert False, "Should have failed or created union"
+    except TypeInferenceError as e:
+        error_msg = str(e)
+        # Should include information about the conflicting constraints
+        assert "conflict" in error_msg.lower() or "constraint" in error_msg.lower()
+
+
+@pytest.mark.skip(reason="TODO: Add readable error messages")
+def test_readable_error_messages():
+    """
+    Test that error messages are human-readable and actionable.
+    
+    CSP has human-readable constraint descriptions.
+    """
+    def empty_container_test(items: List[A]) -> A: ...
+    
+    try:
+        infer_return_type(empty_container_test, [])
+        assert False, "Should have failed"
+    except TypeInferenceError as e:
+        error_msg = str(e)
+        # Should explain what went wrong in clear terms
+        assert len(error_msg) > 20  # Not just a terse error code
+
+
+# =============================================================================
+# PERFORMANCE AND SCALABILITY TESTS
+# =============================================================================
+
+@pytest.mark.skip(reason="TODO: Add performance benchmarks")
+def test_deeply_nested_performance():
+    """
+    Test performance on deeply nested structures.
+    
+    Ensure unification doesn't have exponential blowup on deep nesting.
+    """
+    import time
+    
+    def deep_nested(data: List[List[List[List[List[A]]]]]) -> A: ...
+    
+    deep_data = [[[[[1, 2, 3]]]]]
+    
+    start = time.time()
+    result = infer_return_type(deep_nested, deep_data)
+    elapsed = time.time() - start
+    
+    assert result is int
+    assert elapsed < 1.0  # Should complete in under 1 second
+
+
+@pytest.mark.skip(reason="TODO: Add scalability tests")
+def test_many_typevars_scalability():
+    """
+    Test scalability with many TypeVars.
+    
+    Ensure constraint solving doesn't become too slow with many variables.
+    """
+    # Define a type with many type parameters
+    @dataclass
+    class ManyParams(typing.Generic[A, B, C, X, Y]):
+        a: A
+        b: B  
+        c: C
+        x: X
+        y: Y
+    
+    def extract_all(mp: ManyParams[A, B, C, X, Y]) -> Tuple[A, B, C, X, Y]: ...
+    
+    instance = ManyParams[int, str, float, bool, bytes](
+        a=1, b="hello", c=3.14, x=True, y=b"data"
+    )
+    
+    import time
+    start = time.time()
+    result = infer_return_type(extract_all, instance)
+    elapsed = time.time() - start
+    
+    assert elapsed < 0.5  # Should be fast even with many TypeVars
