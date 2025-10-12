@@ -1193,6 +1193,211 @@ class TestGetAnnotationValuePairsEdgeCases:
         assert values == [1, "hello", 3.14]
 
 
+class TestTypeVarSubstitutionInPairs:
+    """Test TypeVar substitution in get_annotation_value_pairs."""
+    
+    def test_dataclass_same_typevar_preserves_typevar(self):
+        """Test that WrapDC[A] preserves TypeVar A in pairs."""
+        A = TypeVar('A')
+        
+        @dataclass
+        class WrapDC(typing.Generic[A]):
+            value: A
+        
+        pairs = get_annotation_value_pairs(WrapDC[A], WrapDC(value=42))
+        assert len(pairs) == 1
+        
+        generic_info, val = pairs[0]
+        assert isinstance(generic_info.origin, TypeVar)
+        assert generic_info.origin == A
+        assert val == 42
+    
+    def test_dataclass_concrete_type_substitutes(self):
+        """Test that WrapDC[int] uses concrete type int in pairs."""
+        A = TypeVar('A')
+        
+        @dataclass
+        class WrapDC(typing.Generic[A]):
+            value: A
+        
+        pairs = get_annotation_value_pairs(WrapDC[int], WrapDC(value=42))
+        assert len(pairs) == 1
+        
+        generic_info, val = pairs[0]
+        assert generic_info.origin is int
+        assert val == 42
+    
+    def test_dataclass_nested_typevar_substitution(self):
+        """Test that WrapDC[List[B]] substitutes A→List[B] but preserves B."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        @dataclass
+        class WrapDC(typing.Generic[A]):
+            value: A
+        
+        pairs = get_annotation_value_pairs(WrapDC[List[B]], WrapDC(value=[1, 2]))
+        assert len(pairs) == 1
+        
+        generic_info, val = pairs[0]
+        assert generic_info.origin is list
+        assert B in generic_info.type_params
+        assert val == [1, 2]
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_same_typevar_preserves_typevar(self):
+        """Test that Pydantic WrapPyd[A] preserves TypeVar A in pairs."""
+        A = TypeVar('A')
+        
+        class WrapPyd(BaseModel, typing.Generic[A]):
+            value: A
+        
+        pairs = get_annotation_value_pairs(WrapPyd[A], WrapPyd[int](value=42))
+        assert len(pairs) == 1
+        
+        generic_info, val = pairs[0]
+        assert isinstance(generic_info.origin, TypeVar)
+        assert generic_info.origin == A
+        assert val == 42
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_concrete_type_substitutes(self):
+        """Test that Pydantic WrapPyd[int] uses concrete type int in pairs."""
+        A = TypeVar('A')
+        
+        class WrapPyd(BaseModel, typing.Generic[A]):
+            value: A
+        
+        pairs = get_annotation_value_pairs(WrapPyd[int], WrapPyd[int](value=42))
+        assert len(pairs) == 1
+        
+        generic_info, val = pairs[0]
+        assert generic_info.origin is int
+        assert val == 42
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_nested_typevar_substitution(self):
+        """Test that Pydantic WrapPyd[List[B]] substitutes A→List[B] but preserves B."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        class WrapPyd(BaseModel, typing.Generic[A]):
+            value: A
+        
+        pairs = get_annotation_value_pairs(WrapPyd[List[B]], WrapPyd[List[B]](value=[1, 2]))
+        assert len(pairs) == 1
+        
+        generic_info, val = pairs[0]
+        assert generic_info.origin is list
+        assert B in generic_info.type_params
+        assert val == [1, 2]
+    
+    def test_dataclass_multi_param_substitution(self):
+        """Test multi-parameter generic with partial substitution."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        C = TypeVar('C')
+        
+        @dataclass
+        class MultiParam(typing.Generic[A, B]):
+            first: A
+            second: B
+        
+        # Substitute both to concrete types
+        pairs = get_annotation_value_pairs(MultiParam[int, str], MultiParam(first=42, second="hello"))
+        assert len(pairs) == 2
+        
+        first_info, first_val = pairs[0]
+        assert first_info.origin is int
+        assert first_val == 42
+        
+        second_info, second_val = pairs[1]
+        assert second_info.origin is str
+        assert second_val == "hello"
+        
+        # Substitute A→int, keep B as TypeVar
+        pairs = get_annotation_value_pairs(MultiParam[int, B], MultiParam(first=42, second="hello"))
+        assert len(pairs) == 2
+        
+        first_info, first_val = pairs[0]
+        assert first_info.origin is int
+        
+        second_info, second_val = pairs[1]
+        assert isinstance(second_info.origin, TypeVar)
+        assert second_info.origin == B
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_multi_param_substitution(self):
+        """Test Pydantic multi-parameter generic with partial substitution."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        class MultiPyd(BaseModel, typing.Generic[A, B]):
+            first: A
+            second: B
+        
+        # Substitute both to concrete types
+        pairs = get_annotation_value_pairs(MultiPyd[int, str], MultiPyd[int, str](first=42, second="hello"))
+        assert len(pairs) == 2
+        
+        first_info, first_val = pairs[0]
+        assert first_info.origin is int
+        assert first_val == 42
+        
+        second_info, second_val = pairs[1]
+        assert second_info.origin is str
+        assert second_val == "hello"
+        
+        # Substitute A→int, keep B as TypeVar
+        pairs = get_annotation_value_pairs(MultiPyd[int, B], MultiPyd[int, B](first=42, second="hello"))
+        assert len(pairs) == 2
+        
+        first_info, first_val = pairs[0]
+        assert first_info.origin is int
+        
+        second_info, second_val = pairs[1]
+        assert isinstance(second_info.origin, TypeVar)
+        assert second_info.origin == B
+    
+    def test_dataclass_deeply_nested_substitution(self):
+        """Test deeply nested TypeVar substitution."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        @dataclass
+        class Deep(typing.Generic[A]):
+            data: List[Dict[str, A]]
+        
+        # Keep TypeVar
+        pairs = get_annotation_value_pairs(Deep[A], Deep(data=[{"key": 42}]))
+        assert len(pairs) == 1
+        
+        data_info, data_val = pairs[0]
+        assert data_info.origin is list
+        assert A in data_info.type_params
+        
+        # Substitute to concrete
+        pairs = get_annotation_value_pairs(Deep[int], Deep(data=[{"key": 42}]))
+        assert len(pairs) == 1
+        
+        data_info, data_val = pairs[0]
+        assert data_info.origin is list
+        assert A not in data_info.type_params
+        # The nested structure should have int, not A
+        dict_info = data_info.concrete_args[0]
+        value_info = dict_info.concrete_args[1]
+        assert value_info.origin is int
+        
+        # Substitute to another TypeVar
+        pairs = get_annotation_value_pairs(Deep[B], Deep(data=[{"key": 42}]))
+        assert len(pairs) == 1
+        
+        data_info, data_val = pairs[0]
+        assert data_info.origin is list
+        assert B in data_info.type_params
+        assert A not in data_info.type_params
+
+
 class TestCreateUnionEdgeCases:
     """Test edge cases in create_union_if_needed."""
     

@@ -77,7 +77,11 @@ class GenericInfo:
             else:
                 return tuple[tuple(resolved_args)]
         else:
-            return self.origin[*resolved_args]
+            try:
+                return self.origin[*resolved_args]
+            except (TypeError, AttributeError):
+                # Some origins don't support subscription, return as-is
+                return self.origin
 
     def _is_union_origin(self) -> bool:
         """Check if origin is a Union type."""
@@ -130,6 +134,62 @@ class GenericExtractor(ABC):
         
         Returns empty list if this extractor doesn't handle the annotation-instance pair.
         """
+    
+    def _build_typevar_substitution_map(self, annotation_info: GenericInfo) -> Dict[TypeVar, GenericInfo]:
+        """Build a map from TypeVars to their concrete substitutions.
+        
+        Shared helper for extractors that need TypeVar substitution.
+        Only creates mappings when TypeVars are bound to non-TypeVar types.
+        """
+        if not annotation_info.concrete_args:
+            return {}
+        
+        # Get original TypeVars from the class definition
+        original_typevars = self._get_original_type_parameters(annotation_info.origin)
+        if not original_typevars:
+            return {}
+        
+        # Map each TypeVar to its concrete arg, but skip identity mappings (A -> A)
+        typevar_map = {}
+        for typevar, concrete_arg in zip(original_typevars, annotation_info.concrete_args):
+            # Only add mapping if concrete_arg is not the same TypeVar (avoid A -> A)
+            if not (isinstance(concrete_arg.origin, TypeVar) and concrete_arg.origin == typevar):
+                typevar_map[typevar] = concrete_arg
+        
+        return typevar_map
+    
+    def _substitute_typevars_in_generic_info(
+        self, 
+        generic_info: GenericInfo, 
+        typevar_map: Dict[TypeVar, GenericInfo]
+    ) -> GenericInfo:
+        """Substitute TypeVars in a GenericInfo structure.
+        
+        Shared helper for extractors that need TypeVar substitution.
+        """
+        # If this is a TypeVar, substitute it
+        if isinstance(generic_info.origin, TypeVar) and generic_info.origin in typevar_map:
+            return typevar_map[generic_info.origin]
+        
+        # If no concrete args, return as-is
+        if not generic_info.concrete_args:
+            return generic_info
+        
+        # Recursively substitute in concrete args
+        substituted_args = [
+            self._substitute_typevars_in_generic_info(arg, typevar_map)
+            for arg in generic_info.concrete_args
+        ]
+        
+        # Return new GenericInfo with substituted args
+        return GenericInfo(origin=generic_info.origin, concrete_args=substituted_args)
+    
+    @abstractmethod
+    def _get_original_type_parameters(self, cls: Any) -> List[TypeVar]:
+        """Get the original TypeVar parameters from a class definition.
+        
+        Implemented by subclasses based on their specific metadata mechanisms.
+        """
 
 
 class BuiltinExtractor(GenericExtractor):
@@ -139,6 +199,10 @@ class BuiltinExtractor(GenericExtractor):
         list, dict, tuple, set,
         List, Dict, Tuple, Set,
     })
+    
+    def _get_original_type_parameters(self, cls: Any) -> List[TypeVar]:
+        """Built-in types don't have TypeVar parameters in their definitions."""
+        return []
 
     def can_handle_annotation(self, annotation: Any) -> bool:
         origin = get_origin(annotation)
@@ -282,18 +346,25 @@ class PydanticExtractor(GenericExtractor):
         return []
 
     def get_annotation_value_pairs(self, annotation: Any, instance: Any) -> List[Tuple[GenericInfo, Any]]:
-        """Extract (GenericInfo, value) pairs from Pydantic model fields."""
+        """Extract (GenericInfo, value) pairs from Pydantic model fields.
+        
+        Pydantic specializes field annotations in parameterized classes, so we can
+        use annotation's fields directly without manual substitution:
+        - Level3[A] → fields have TypeVar A
+        - Level3[bool] → fields have bool
+        - Level3[List[B]] → fields have List[B]
+        """
         if instance is None or not hasattr(instance, "__pydantic_fields__"):
             return []
         
-        annotation_info = self.extract_from_annotation(annotation)
-        if not hasattr(annotation_info.origin, "__pydantic_fields__"):
+        # Use annotation's fields directly - Pydantic already specializes them
+        if not hasattr(annotation, "__pydantic_fields__"):
             return []
         
         pairs = []
-        for field_name, field_info in instance.__pydantic_fields__.items():
+        for field_name, field_info in annotation.__pydantic_fields__.items():
             field_value = getattr(instance, field_name)
-            # Map each field to its own field annotation
+            # Map each field to its annotation (already specialized by Pydantic)
             field_generic_info = get_generic_info(field_info.annotation)
             pairs.append((field_generic_info, field_value))
         
@@ -302,6 +373,10 @@ class PydanticExtractor(GenericExtractor):
 
 class UnionExtractor(GenericExtractor):
     """Extractor for Union types (both typing.Union and types.UnionType)."""
+    
+    def _get_original_type_parameters(self, cls: Any) -> List[TypeVar]:
+        """Union types don't have TypeVar parameters in their definitions."""
+        return []
 
     def can_handle_annotation(self, annotation: Any) -> bool:
         origin = get_origin(annotation)
@@ -398,11 +473,19 @@ class DataclassExtractor(GenericExtractor):
         if not is_dataclass(annotation_info.origin):
             return []
         
+        # Build TypeVar substitution map if annotation is parameterized
+        typevar_map = self._build_typevar_substitution_map(annotation_info)
+        
         pairs = []
         for dataclass_field in fields(instance):
             field_value = getattr(instance, dataclass_field.name)
-            # Map each field to its own field annotation
+            # Map each field to its own field annotation, with TypeVar substitution
             field_generic_info = get_generic_info(dataclass_field.type)
+            
+            # Substitute TypeVars if we have a parameterized annotation
+            if typevar_map:
+                field_generic_info = self._substitute_typevars_in_generic_info(field_generic_info, typevar_map)
+            
             pairs.append((field_generic_info, field_value))
         
         return pairs
