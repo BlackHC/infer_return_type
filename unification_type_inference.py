@@ -220,34 +220,33 @@ class UnificationEngine:
         # Handle complex cases (non-TypeVar pairs)
         if complex_pairs:
             # Check if we have multiple pairs with the same Union type for distribution
-            # (e.g., List[Union[A, B]] with multiple elements)
-            if len(complex_pairs) > 1:
-                first_info, _ = complex_pairs[0]
-                first_resolved = get_generic_info(first_info.resolved_type)
+            # (e.g., List[Union[A, B]] with multiple elements, List[Optional[Dict[str, A]]])
+            first_info, _ = complex_pairs[0]
+            
+            # Check if the first pair is itself a Union type
+            if is_union_type(first_info.origin):
+                # Check if all pairs have the same Union structure
+                all_same_union = all(
+                    is_union_type(gi.origin)
+                    for gi, _ in complex_pairs
+                )
                 
-                # If this is a Union type shared by multiple values, try distribution
-                if is_union_type(first_resolved.origin):
-                    # Check if all pairs have the same Union structure
-                    all_same_union = all(
-                        is_union_type(get_generic_info(gi.resolved_type).origin)
-                        for gi, _ in complex_pairs
-                    )
+                if all_same_union:
+                    # All elements are Union types - handle them
+                    union_args = first_info.concrete_args
                     
-                    if all_same_union:
-                        # Collect all values for distribution
+                    # For multiple values, try distribution first
+                    if len(complex_pairs) > 1:
                         all_values = [val for _, val in complex_pairs]
-                        union_args = first_resolved.concrete_args
-                        
-                        # Try to distribute types among TypeVars in the union
                         if self._try_distribute_union_types(all_values, union_args, constraints):
                             return
-                        
-                        # Fallback: match each value to union alternatives
-                        for _, val in complex_pairs:
-                            self._match_value_to_union_alternatives(val, union_args, constraints)
-                        return
+                    
+                    # Match each value to union alternatives (handles Optional[Dict[str, A]] etc.)
+                    for _, val in complex_pairs:
+                        self._match_value_to_union_alternatives(val, union_args, constraints)
+                    return
             
-            # For single pairs or non-uniform unions, process each individually
+            # For non-union pairs, process each individually
             for generic_info, val in complex_pairs:
                 # Use GenericInfo-based matching instead of resolved_type
                 # to avoid losing TypeVars due to Pydantic same-TypeVar optimization
@@ -627,6 +626,22 @@ class UnificationEngine:
             if not isinstance(alt_info.origin, TypeVar) and alt_info.resolved_type == value_type:
                 # Perfect match with concrete type - no constraints needed
                 return
+        
+        # Try to match value against complex generic alternatives (e.g., Dict[str, A] in Optional[Dict[str, A]])
+        # This is crucial for handling Optional[ComplexType[A]] patterns
+        for alt_info in union_alternatives:
+            if not isinstance(alt_info.origin, TypeVar):
+                # This is a structured type (like Dict[str, A]) - try to match it
+                try:
+                    temp_constraints = []
+                    self._collect_constraints_internal(alt_info.resolved_type, value, temp_constraints)
+                    # If we successfully collected constraints, use them
+                    if temp_constraints:
+                        constraints.extend(temp_constraints)
+                        return
+                except (UnificationError, TypeError):
+                    # This alternative doesn't match - try next
+                    continue
         
         # Get existing TypeVar bindings for context-aware matching
         existing_bindings = self._get_existing_typevar_bindings(constraints, Variance.INVARIANT)
