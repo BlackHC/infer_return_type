@@ -16,7 +16,7 @@ import functools
 import typing
 import types
 from typing import Any, Dict, Iterable, List, Set, TypeVar, Tuple, Union, get_args, get_origin
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field, is_dataclass, fields
 from abc import ABC, abstractmethod
 
 
@@ -453,9 +453,7 @@ def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["Ge
     
     # Handle dataclasses
     elif is_dataclass(annotation_info.origin) and is_dataclass(instance):
-        # Import locally to avoid name conflicts
-        from dataclasses import fields as get_fields
-        for dataclass_field in get_fields(instance):
+        for dataclass_field in fields(instance):
             field_value = getattr(instance, dataclass_field.name)
             # Map each field to its own field annotation
             field_generic_info = get_generic_info(dataclass_field.type)
