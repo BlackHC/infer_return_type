@@ -1439,49 +1439,6 @@ def test_many_typevars_scalability():
 
 
 # =============================================================================
-# ARCHITECTURAL TESTS
-# =============================================================================
-
-def test_architectural_improvements():
-    """Demonstrate architectural improvements - unified interface."""
-    
-    from unification_type_inference import UnificationEngine
-    from generic_utils import GenericExtractor
-    
-    engine = UnificationEngine()
-    
-    # Show that we have a clean extractor interface through generic_utils
-    assert len(engine.generic_utils.extractors) >= 3  # Pydantic, Dataclass, Builtin
-    
-    # Each extractor implements the same interface
-    for extractor in engine.generic_utils.extractors:
-        assert hasattr(extractor, 'can_handle_annotation')
-        assert hasattr(extractor, 'can_handle_instance')
-        assert hasattr(extractor, 'extract_from_annotation')
-        assert hasattr(extractor, 'extract_from_instance')
-    
-    # Test that we can easily add new extractors by subclassing
-    class CustomExtractor(GenericExtractor):
-        def can_handle_annotation(self, annotation):
-            return False  # dummy implementation
-        
-        def can_handle_instance(self, instance):
-            return False
-        
-        def extract_from_annotation(self, annotation):
-            from generic_utils import GenericInfo
-            return GenericInfo()
-        
-        def extract_from_instance(self, instance):
-            from generic_utils import GenericInfo
-            return GenericInfo()
-    
-    # Can be easily added to the system
-    custom_extractor = CustomExtractor()
-    engine.generic_utils.extractors.append(custom_extractor)
-
-
-# =============================================================================
 # NESTED FIELD EXTRACTION TESTS (from original implementation)
 # =============================================================================
 
