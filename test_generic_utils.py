@@ -1398,6 +1398,46 @@ class TestTypeVarSubstitutionInPairs:
         assert A not in data_info.type_params
 
 
+class TestForwardRefResolution:
+    """Test that ForwardRefs in dataclass fields are resolved properly."""
+    
+    def test_dataclass_forwardref_resolution(self):
+        """Test that ForwardRef in recursive types is resolved."""
+        
+        @dataclass
+        class TreeNode(typing.Generic[A]):
+            value: A
+            children: typing.List['TreeNode[A]']
+        
+        tree = TreeNode[str](
+            value="root",
+            children=[TreeNode[str](value="child", children=[])]
+        )
+        
+        pairs = get_annotation_value_pairs(TreeNode[A], tree)
+        assert len(pairs) == 2
+        
+        # First pair: value field
+        value_info, value_val = pairs[0]
+        assert isinstance(value_info.origin, TypeVar)
+        assert value_info.origin == A
+        
+        # Second pair: children field (should be resolved, not ForwardRef)
+        children_info, children_val = pairs[1]
+        assert children_info.origin is list
+        assert len(children_info.concrete_args) == 1
+        
+        # The element type should be TreeNode[A], not ForwardRef
+        element_info = children_info.concrete_args[0]
+        assert element_info.origin is TreeNode
+        # Check that it has a TypeVar (may not be the exact same A object due to scope)
+        assert len(element_info.type_params) == 1
+        assert isinstance(element_info.type_params[0], TypeVar)
+        assert element_info.type_params[0] is A
+        # Verify it's properly resolved (origin is a class, not ForwardRef object)
+        assert not hasattr(element_info.origin, '__forward_arg__')
+
+
 class TestCreateUnionEdgeCases:
     """Test edge cases in create_union_if_needed."""
     

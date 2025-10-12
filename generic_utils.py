@@ -15,7 +15,7 @@ Key concepts:
 import functools
 import typing
 import types
-from typing import Any, Dict, List, Set, TypeVar, Tuple, Union, get_args, get_origin
+from typing import Any, Dict, List, Set, TypeVar, Tuple, Union, get_args, get_origin, get_type_hints
 from dataclasses import dataclass, field, is_dataclass, fields
 from abc import ABC, abstractmethod
 
@@ -185,7 +185,7 @@ class GenericExtractor(ABC):
         return GenericInfo(origin=generic_info.origin, concrete_args=substituted_args)
     
     @abstractmethod
-    def _get_original_type_parameters(self, cls: Any) -> List[TypeVar]:
+    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
         """Get the original TypeVar parameters from a class definition.
         
         Implemented by subclasses based on their specific metadata mechanisms.
@@ -200,7 +200,7 @@ class BuiltinExtractor(GenericExtractor):
         List, Dict, Tuple, Set,
     })
     
-    def _get_original_type_parameters(self, cls: Any) -> List[TypeVar]:
+    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
         """Built-in types don't have TypeVar parameters in their definitions."""
         return []
 
@@ -374,7 +374,7 @@ class PydanticExtractor(GenericExtractor):
 class UnionExtractor(GenericExtractor):
     """Extractor for Union types (both typing.Union and types.UnionType)."""
     
-    def _get_original_type_parameters(self, cls: Any) -> List[TypeVar]:
+    def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
         """Union types don't have TypeVar parameters in their definitions."""
         return []
 
@@ -476,11 +476,26 @@ class DataclassExtractor(GenericExtractor):
         # Build TypeVar substitution map if annotation is parameterized
         typevar_map = self._build_typevar_substitution_map(annotation_info)
         
+        # Get resolved field types (resolves ForwardRefs)
+        # Build localns with the class itself for ForwardRef resolution in local scopes
+        try:
+            import sys
+            module = sys.modules.get(annotation_info.origin.__module__)
+            globalns = vars(module) if module else {}
+            # Include the class itself in localns to resolve self-referential ForwardRefs
+            localns = {annotation_info.origin.__name__: annotation_info.origin}
+            field_hints = get_type_hints(annotation_info.origin, globalns=globalns, localns=localns)
+        except Exception:
+            # Fallback to raw field types if get_type_hints fails
+            field_hints = {}
+        
         pairs = []
         for dataclass_field in fields(instance):
             field_value = getattr(instance, dataclass_field.name)
-            # Map each field to its own field annotation, with TypeVar substitution
-            field_generic_info = get_generic_info(dataclass_field.type)
+            
+            # Use resolved field type if available, otherwise use raw type
+            field_type = field_hints.get(dataclass_field.name, dataclass_field.type)
+            field_generic_info = get_generic_info(field_type)
             
             # Substitute TypeVars if we have a parameterized annotation
             if typevar_map:
