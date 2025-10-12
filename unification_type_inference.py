@@ -13,14 +13,13 @@ where we unify annotation structures with concrete value types.
 """
 
 import inspect
-import types
-from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar
 from enum import Enum
 from collections import defaultdict
 
 # Import unified generic utilities
 from generic_utils import (
-    get_generic_info, get_instance_generic_info, create_union_if_needed, get_annotation_value_pairs
+    GenericInfo, get_generic_info, get_instance_generic_info, create_union_if_needed, get_annotation_value_pairs, is_union_type
 )
 
 
@@ -137,7 +136,7 @@ class UnificationEngine:
         info = get_generic_info(annotation)
         
         # Special case: Union types (need custom logic for alternative selection)
-        if info.origin is Union or (hasattr(types, 'UnionType') and info.origin is getattr(types, 'UnionType')):
+        if is_union_type(info.origin):
             self._handle_union_constraints(annotation, value, constraints)
             return
         
@@ -149,7 +148,9 @@ class UnificationEngine:
         
         # Fallback: Try direct generic structure matching for custom types
         # This handles cases like Pydantic[A, list[B]] with Pydantic[int, list[str]]
-        if self._try_direct_structure_match(annotation, value, constraints):
+        ann_info = get_generic_info(annotation)
+        val_info = get_instance_generic_info(value)
+        if self._try_match_generic_info_with_instance(ann_info, val_info, constraints):
             return
         
         # Final fallback: handle non-container types or types without type parameters
@@ -164,7 +165,9 @@ class UnificationEngine:
                 ref_class_name = forward_name.split('[')[0] if '[' in forward_name else forward_name
                 if value_class_name == ref_class_name:
                     # Names match - use direct structure matching with instance
-                    if self._try_direct_structure_match(annotation, value, constraints):
+                    ann_info = get_generic_info(annotation)
+                    val_info = get_instance_generic_info(value)
+                    if self._try_match_generic_info_with_instance(ann_info, val_info, constraints):
                         return
                     # If structure matching didn't work, just skip (assume match by name)
                     return
@@ -223,10 +226,10 @@ class UnificationEngine:
                 first_resolved = get_generic_info(first_info.resolved_type)
                 
                 # If this is a Union type shared by multiple values, try distribution
-                if first_resolved.origin is Union or (hasattr(types, 'UnionType') and first_resolved.origin is getattr(types, 'UnionType')):
+                if is_union_type(first_resolved.origin):
                     # Check if all pairs have the same Union structure
                     all_same_union = all(
-                        get_generic_info(gi.resolved_type).origin in (Union, getattr(types, 'UnionType', None))
+                        is_union_type(get_generic_info(gi.resolved_type).origin)
                         for gi, _ in complex_pairs
                     )
                     
@@ -248,38 +251,44 @@ class UnificationEngine:
             for generic_info, val in complex_pairs:
                 # Use GenericInfo-based matching instead of resolved_type
                 # to avoid losing TypeVars due to Pydantic same-TypeVar optimization
-                if self._try_match_generic_info_with_instance(generic_info, val, constraints):
+                val_info = get_instance_generic_info(val)
+                if self._try_match_generic_info_with_instance(generic_info, val_info, constraints):
                     continue
                 # Fallback: recursively collect constraints
                 self._collect_constraints_internal(generic_info.resolved_type, val, constraints)
     
     def _try_match_generic_info_with_instance(
         self, 
-        annotation_info: Any,  # GenericInfo
-        value: Any, 
+        annotation_info: GenericInfo,
+        value_info: GenericInfo,
         constraints: List[Constraint]
     ) -> bool:
-        """Match GenericInfo directly with instance to extract TypeVar bindings.
+        """Match two GenericInfo objects to extract TypeVar bindings.
         
         This avoids the Pydantic same-TypeVar optimization issue where Box[A].resolved_type
         returns Box instead of Box[A], losing the TypeVar information.
+        
+        Args:
+            annotation_info: GenericInfo from the annotation
+            value_info: GenericInfo from the instance
+            constraints: List to append constraints to
+            
+        Returns:
+            True if any constraints were found, False otherwise
         """
-        # Get instance type information
-        val_info = get_instance_generic_info(value)
-        
         # Both must be generic with compatible origins
-        if not (annotation_info.is_generic and val_info.is_generic):
+        if not (annotation_info.is_generic and value_info.is_generic):
             return False
         
-        if annotation_info.origin != val_info.origin:
+        if annotation_info.origin != value_info.origin:
             return False
         
-        if len(annotation_info.concrete_args) != len(val_info.concrete_args):
+        if len(annotation_info.concrete_args) != len(value_info.concrete_args):
             return False
         
         # Match each type argument pair
         found_constraints = False
-        for ann_arg, val_arg in zip(annotation_info.concrete_args, val_info.concrete_args):
+        for ann_arg, val_arg in zip(annotation_info.concrete_args, value_info.concrete_args):
             # Direct TypeVar binding
             if isinstance(ann_arg.origin, TypeVar) and not isinstance(val_arg.origin, TypeVar):
                 constraints.append(Constraint(ann_arg.origin, val_arg.resolved_type, Variance.INVARIANT))
@@ -287,37 +296,6 @@ class UnificationEngine:
             # Recursive matching for nested structures
             elif ann_arg.is_generic and val_arg.is_generic:
                 if self._try_match_generic_info_with_instance(ann_arg, val_arg, constraints):
-                    found_constraints = True
-        
-        return found_constraints
-    
-    def _try_direct_structure_match(self, annotation: Any, value: Any, constraints: List[Constraint]) -> bool:
-        """Try to match generic structures directly (e.g., Generic[A, B] with Generic[int, str]).
-        
-        This is a fallback for cases where get_annotation_value_pairs doesn't give us useful constraints.
-        """
-        ann_info = get_generic_info(annotation)
-        val_info = get_instance_generic_info(value)
-        
-        # Both must be generic with compatible origins and matching argument counts
-        if not (ann_info.is_generic and val_info.is_generic):
-            return False
-            
-        if ann_info.origin != val_info.origin:
-            return False
-        
-        if len(ann_info.concrete_args) != len(val_info.concrete_args):
-            return False
-        
-        # Match each type argument pair
-        found_constraints = False
-        for ann_arg, val_arg in zip(ann_info.concrete_args, val_info.concrete_args):
-            if isinstance(ann_arg.origin, TypeVar) and not isinstance(val_arg.origin, TypeVar):
-                constraints.append(Constraint(ann_arg.origin, val_arg.resolved_type, Variance.INVARIANT))
-                found_constraints = True
-            elif ann_arg.origin == val_arg.origin and ann_arg.concrete_args and val_arg.concrete_args:
-                # Recursively match nested structures
-                if self._try_direct_structure_match(ann_arg.resolved_type, val_arg.resolved_type, constraints):
                     found_constraints = True
         
         return found_constraints
@@ -516,8 +494,7 @@ class UnificationEngine:
                         return True
             
             # Union constraint matching: check if inferred union components match constraint union components
-            if (inferred_info.origin is Union or (hasattr(types, 'UnionType') and inferred_info.origin is getattr(types, 'UnionType'))) and \
-               (constraint_info.origin is Union or (hasattr(types, 'UnionType') and constraint_info.origin is getattr(types, 'UnionType'))):
+            if is_union_type(inferred_info.origin) and is_union_type(constraint_info.origin):
                 # Both are unions - check if components match by origin
                 if self._union_components_match(inferred_info, constraint_info):
                     return True
@@ -555,7 +532,7 @@ class UnificationEngine:
         # Check explicit constraints (e.g., TypeVar('T', int, str))
         if typevar.__constraints__:
             # For union types, check if it matches any constraint (which may also be unions)
-            if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
+            if is_union_type(origin):
                 # Check if the union matches any of the constraint unions
                 if not self._matches_any_constraint(concrete_type, typevar.__constraints__):
                     raise UnificationError(
@@ -570,7 +547,7 @@ class UnificationEngine:
         # Check bound (e.g., TypeVar('T', bound=int))
         if typevar.__bound__:
             # For union types, check if all components satisfy the bound
-            if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
+            if is_union_type(origin):
                 union_args = type_info.concrete_args
                 # All components must satisfy the bound
                 for arg_info in union_args:
@@ -765,7 +742,7 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
     args = [arg_info.resolved_type for arg_info in args_info]
     
     # Handle Union types specially - only include bound TypeVars
-    if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
+    if is_union_type(origin):
         substituted_args = []
         
         for arg in args:
@@ -798,7 +775,7 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
         return tuple[tuple(substituted_args)]
     elif origin in (set, Set):
         return set[substituted_args[0]]
-    elif origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
+    elif is_union_type(origin):
         if len(substituted_args) == 1:
             return substituted_args[0]
         return create_union_if_needed(set(substituted_args))
