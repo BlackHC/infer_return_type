@@ -37,6 +37,8 @@ from pydantic import BaseModel
 A = TypeVar('A')
 B = TypeVar('B')
 C = TypeVar('C')
+D = TypeVar('D')
+E = TypeVar('E')
 K = TypeVar('K')
 V = TypeVar('V')
 
