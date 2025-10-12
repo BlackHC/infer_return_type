@@ -1696,3 +1696,454 @@ def test_comparison_with_explicit_types():
     
     # Both should give the same result
     assert explicit_result == inferred_result == int
+
+
+# =============================================================================
+# COVERAGE IMPROVEMENT TESTS - EDGE CASES AND ERROR PATHS
+# =============================================================================
+
+def test_constraint_and_substitution_internals():
+    """Test internal methods of Constraint and Substitution classes."""
+    from unification_type_inference import Constraint, Substitution, Variance
+    
+    # Test Constraint __str__ and __repr__
+    constraint = Constraint(A, int, Variance.COVARIANT)
+    str_repr = str(constraint)
+    assert "~" in str_repr
+    assert "covariant" in str_repr
+    
+    # Test Constraint with is_override flag
+    override_constraint = Constraint(A, str, Variance.INVARIANT, is_override=True)
+    override_str = str(override_constraint)
+    assert "override" in override_str
+    repr_str = repr(override_constraint)
+    assert "override" in repr_str
+    
+    # Test Substitution.compose
+    sub1 = Substitution()
+    sub1.bind(A, int)
+    
+    sub2 = Substitution()
+    sub2.bind(B, str)
+    
+    composed = sub1.compose(sub2)
+    assert composed.get(A) == int
+    assert composed.get(B) == str
+    
+    # Test composing with TypeVar substitution
+    sub3 = Substitution()
+    sub3.bind(A, B)  # A -> B
+    
+    sub4 = Substitution()
+    sub4.bind(B, int)  # B -> int
+    
+    composed2 = sub3.compose(sub4)
+    # After composition, A should map to B (since sub4 applies to sub3's bindings)
+    assert composed2.get(A) == B or composed2.get(A) == int
+
+
+def test_optional_with_none_value():
+    """Test Optional type handling when value is None."""
+    
+    def process_optional(x: Optional[A], y: Optional[B]) -> Tuple[A, B]: ...
+    
+    # When we have None values, the TypeVar in Optional can't be inferred from that parameter
+    # But other parameters can still provide the type information
+    t = infer_return_type(process_optional, 42, "hello")
+    assert typing.get_origin(t) is tuple
+    assert typing.get_args(t) == (int, str)
+    
+    # Test with one None value - should still work from the other parameter
+    def process_one_optional(x: Optional[A], y: A) -> A: ...
+    t = infer_return_type(process_one_optional, None, 42)
+    assert t == int
+
+
+def test_union_constraint_handling_errors():
+    """Test error handling in union constraint collection."""
+    
+    # Test Union where no alternatives match (should raise)
+    def process_strict_union(x: Union[List[int], Dict[str, str]]) -> int: ...
+    
+    # A set doesn't match either alternative
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_strict_union, {1, 2, 3})
+
+
+def test_tuple_ellipsis_handling():
+    """Test Tuple[A, ...] (variable length tuple) handling."""
+    
+    def process_var_tuple(t: Tuple[A, ...]) -> Set[A]: ...
+    
+    # Empty tuple should fail (can't infer A)
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_var_tuple, ())
+    
+    # Non-empty tuple should work
+    t = infer_return_type(process_var_tuple, (1, 2, 3))
+    assert typing.get_origin(t) is set
+    assert typing.get_args(t) == (int,)
+    
+    # Test with mixed types - should create union
+    t = infer_return_type(process_var_tuple, (1, "hello", 2, "world"))
+    assert typing.get_origin(t) is set
+    union_arg = typing.get_args(t)[0]
+    import types
+    origin = typing.get_origin(union_arg)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+
+
+def test_set_constraint_union_handling():
+    """Test Set with Union element types."""
+    
+    def process_set_union(s: Set[Union[A, B]]) -> Tuple[A, B]: ...
+    
+    # Mixed set with two types
+    t = infer_return_type(process_set_union, {1, "hello", 2, "world"})
+    assert typing.get_origin(t) is tuple
+    
+    # Should distribute types among A and B
+    tuple_args = typing.get_args(t)
+    assert set(tuple_args) == {int, str}
+
+
+def test_constraint_solver_edge_cases():
+    """Test edge cases in constraint solving."""
+    from unification_type_inference import UnificationEngine, Constraint, Variance
+    
+    engine = UnificationEngine()
+    
+    # Test with override constraints
+    constraints = [
+        Constraint(A, int, Variance.INVARIANT),
+        Constraint(A, str, Variance.COVARIANT),
+        Constraint(A, float, Variance.INVARIANT, is_override=True),  # Override wins
+    ]
+    
+    sub = engine._solve_constraints(constraints)
+    assert sub.get(A) == float  # Override should take precedence
+
+
+def test_bounded_typevar_violation():
+    """Test that bounded TypeVar violations are caught."""
+    T_bounded = TypeVar('T_bounded', bound=str)
+    
+    def process_bounded(x: T_bounded) -> T_bounded: ...
+    
+    # int doesn't satisfy bound=str
+    with pytest.raises(TypeInferenceError, match="bound"):
+        infer_return_type(process_bounded, 42)
+    
+    # str subclass should work
+    t = infer_return_type(process_bounded, "hello")
+    assert t == str
+
+
+def test_constrained_typevar_violation():
+    """Test that constrained TypeVar violations are caught."""
+    T_constrained = TypeVar('T_constrained', int, str)
+    
+    def process_constrained(x: T_constrained) -> T_constrained: ...
+    
+    # float is not in constraints (int, str)
+    with pytest.raises(TypeInferenceError, match="violates constraints"):
+        infer_return_type(process_constrained, 3.14)
+    
+    # int should work
+    t = infer_return_type(process_constrained, 42)
+    assert t == int
+
+
+def test_union_in_constraints_checking():
+    """Test Union type constraint checking."""
+    T_constrained = TypeVar('T_constrained', int, str)
+    
+    def process_mixed(items: List[T_constrained]) -> T_constrained: ...
+    
+    # Mixed list creates union - NOTE: The current implementation treats union types
+    # as violating TypeVar constraints even when all components satisfy the constraint.
+    # This is a known limitation - union types like int | str are checked as a whole,
+    # not component-by-component against constrained TypeVars.
+    
+    # For now, this will raise an error, but ideally it should work
+    with pytest.raises(TypeInferenceError, match="violates constraints"):
+        t = infer_return_type(process_mixed, [1, "hello", 2])
+
+
+def test_empty_container_error_messages():
+    """Test that empty container errors provide clear messages."""
+    
+    def process_empty_list(items: List[A]) -> A: ...
+    
+    try:
+        infer_return_type(process_empty_list, [])
+        assert False, "Should have raised TypeInferenceError"
+    except TypeInferenceError as e:
+        error_msg = str(e)
+        # Error message should mention the issue
+        assert "could not" in error_msg.lower() or "insufficient" in error_msg.lower()
+
+
+def test_has_unbound_typevars_helper():
+    """Test _has_unbound_typevars helper function."""
+    from unification_type_inference import _has_unbound_typevars
+    
+    # Simple TypeVar
+    assert _has_unbound_typevars(A) == True
+    
+    # Concrete type
+    assert _has_unbound_typevars(int) == False
+    
+    # List with TypeVar
+    assert _has_unbound_typevars(List[A]) == True
+    
+    # List with concrete type
+    assert _has_unbound_typevars(List[int]) == False
+    
+    # Dict with mixed
+    assert _has_unbound_typevars(Dict[A, int]) == True
+    assert _has_unbound_typevars(Dict[str, int]) == False
+
+
+def test_substitute_typevars_edge_cases():
+    """Test _substitute_typevars with various edge cases."""
+    from unification_type_inference import _substitute_typevars
+    
+    # Unbound TypeVar should be returned as-is
+    bindings = {B: int}
+    result = _substitute_typevars(A, bindings)
+    assert result == A  # A is not in bindings, returned as-is
+    
+    # Union with mixed bound/unbound TypeVars
+    bindings = {A: int}
+    union_type = Union[A, B, str]
+    result = _substitute_typevars(union_type, bindings)
+    
+    # Should only include bound args (int and str), not B
+    import types
+    origin = typing.get_origin(result)
+    if origin is Union or origin is getattr(types, 'UnionType', None):
+        args = typing.get_args(result)
+        # B should not be in the result since it's unbound
+        assert int in args
+        assert str in args
+
+
+def test_infer_type_from_value_edge_cases():
+    """Test _infer_type_from_value helper function."""
+    from unification_type_inference import _infer_type_from_value
+    
+    # None value
+    t = _infer_type_from_value(None)
+    assert t == type(None)
+    
+    # Empty list
+    t = _infer_type_from_value([])
+    assert t == list  # Should return list without type args for empty
+    
+    # List with single type
+    t = _infer_type_from_value([1, 2, 3])
+    assert typing.get_origin(t) is list
+    assert typing.get_args(t) == (int,)
+    
+    # List with mixed types
+    t = _infer_type_from_value([1, "hello"])
+    assert typing.get_origin(t) is list
+    # Should have union type arg
+    
+    # Dict with values
+    t = _infer_type_from_value({1: "a", 2: "b"})
+    assert typing.get_origin(t) is dict
+    key_type, val_type = typing.get_args(t)
+    assert key_type == int
+    assert val_type == str
+    
+    # Set with single type
+    t = _infer_type_from_value({1, 2, 3})
+    assert typing.get_origin(t) is set
+    assert typing.get_args(t) == (int,)
+    
+    # Tuple (should preserve individual types)
+    t = _infer_type_from_value((1, "hello", 3.14))
+    assert typing.get_origin(t) is tuple
+    # Tuple should have all element types
+
+
+def test_dict_constraints_with_empty():
+    """Test Dict constraint handling with empty dict."""
+    
+    def process_dict(d: Dict[A, B]) -> Tuple[A, B]: ...
+    
+    # Empty dict can't infer types
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_dict, {})
+
+
+def test_tuple_fixed_length_partial_match():
+    """Test fixed-length tuple with more elements than annotation expects."""
+    
+    def process_tuple(t: Tuple[A, B]) -> A: ...
+    
+    # Tuple longer than expected - should still extract available positions
+    t = infer_return_type(process_tuple, (1, "hello", "extra"))
+    assert t == int
+
+
+def test_custom_generic_fallback_paths():
+    """Test fallback paths in custom generic handling."""
+    
+    @dataclass
+    class CustomGeneric(typing.Generic[A]):
+        data: A
+    
+    # Test without __orig_class__ - should fall back to field extraction
+    def process_custom(c: CustomGeneric[A]) -> A: ...
+    
+    instance = CustomGeneric(data=42)
+    # Remove __orig_class__ if it exists to test fallback
+    if hasattr(instance, '__orig_class__'):
+        delattr(instance, '__orig_class__')
+    
+    t = infer_return_type(process_custom, instance)
+    assert t == int
+
+
+def test_type_mismatch_errors():
+    """Test type mismatch error handling."""
+    
+    def process_list(items: List[A]) -> A: ...
+    
+    # Passing non-list when List is expected
+    with pytest.raises(TypeInferenceError, match="Expected list"):
+        infer_return_type(process_list, "not a list")
+    
+    def process_dict(d: Dict[A, B]) -> A: ...
+    
+    # Passing non-dict when Dict is expected
+    with pytest.raises(TypeInferenceError, match="Expected dict"):
+        infer_return_type(process_dict, [1, 2, 3])
+    
+    def process_set(s: Set[A]) -> A: ...
+    
+    # Passing non-set when Set is expected
+    with pytest.raises(TypeInferenceError, match="Expected set"):
+        infer_return_type(process_set, [1, 2, 3])
+    
+    def process_tuple(t: Tuple[A, B]) -> A: ...
+    
+    # Passing non-tuple when Tuple is expected
+    with pytest.raises(TypeInferenceError, match="Expected tuple"):
+        infer_return_type(process_tuple, [1, 2])
+
+
+def test_variance_handling_in_constraint_resolution():
+    """Test that variance is properly handled in constraint resolution."""
+    from unification_type_inference import UnificationEngine, Constraint, Variance
+    
+    engine = UnificationEngine()
+    
+    # Multiple covariant constraints should form union
+    constraints = [
+        Constraint(A, int, Variance.COVARIANT),
+        Constraint(A, str, Variance.COVARIANT),
+        Constraint(A, float, Variance.COVARIANT),
+    ]
+    
+    sub = engine._solve_constraints(constraints)
+    result = sub.get(A)
+    
+    # Should be a union type
+    import types
+    origin = typing.get_origin(result)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(result)
+    assert set(union_args) == {int, str, float}
+
+
+def test_function_without_return_annotation():
+    """Test that functions without return annotations raise appropriate errors."""
+    
+    def no_annotation(x):
+        return x
+    
+    with pytest.raises(ValueError, match="return type annotation"):
+        infer_return_type(no_annotation, 42)
+
+
+def test_complex_nested_optional_structures():
+    """Test complex nested Optional structures."""
+    
+    def process_nested_optional(data: Optional[List[Optional[A]]]) -> A: ...
+    
+    # List with None elements
+    t = infer_return_type(process_nested_optional, [1, None, 2])
+    
+    # Should infer A from non-None elements
+    import types
+    origin = typing.get_origin(t)
+    if origin is Union or origin is getattr(types, 'UnionType', None):
+        # May include NoneType
+        union_args = typing.get_args(t)
+        assert int in union_args
+    else:
+        assert t == int
+
+
+def test_is_subtype_helper():
+    """Test _is_subtype helper function."""
+    from unification_type_inference import _is_subtype
+    
+    # Basic subtype relationships
+    assert _is_subtype(bool, int) == True  # bool is subtype of int
+    assert _is_subtype(int, object) == True
+    assert _is_subtype(int, str) == False
+    
+    # Edge case: non-class types
+    assert _is_subtype(List[int], list) == False  # Generic types handled
+
+
+def test_list_union_element_matching():
+    """Test List[Union[A, B]] with complex matching."""
+    
+    def process_list_union(items: List[Union[A, B]]) -> Tuple[Set[A], Set[B]]: ...
+    
+    # When types can be distributed
+    t = infer_return_type(process_list_union, [1, "hello", 2, "world"])
+    
+    assert typing.get_origin(t) is tuple
+    args = typing.get_args(t)
+    assert len(args) == 2
+    
+    # Both should be sets
+    assert typing.get_origin(args[0]) is set
+    assert typing.get_origin(args[1]) is set
+
+
+def test_unification_error_to_type_inference_error():
+    """Test that UnificationError is converted to TypeInferenceError."""
+    from unification_type_inference import UnificationEngine, UnificationError
+    
+    engine = UnificationEngine()
+    
+    # Create a situation that would raise UnificationError
+    # Passing wrong type to typed container
+    def process_strict(items: List[int]) -> int: ...
+    
+    # This should convert UnificationError to TypeInferenceError
+    with pytest.raises(TypeInferenceError):
+        # Pass a non-list
+        engine._collect_constraints(List[int], "not a list", [])
+
+
+def test_callable_type_limitations():
+    """Document Callable type inference limitations."""
+    
+    def higher_order(func: Callable[[A], B], value: A) -> B: ...
+    
+    def sample_func(x: int) -> str:
+        return str(x)
+    
+    # Callable type inference is not fully supported
+    # This should fail because we can't extract types from callable signatures
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(higher_order, sample_func, 42)

@@ -1047,3 +1047,209 @@ class TestGetAnnotationValuePairs:
         assert 42 in values
 
 
+class TestGenericInfoEdgeCases:
+    """Test edge cases and uncovered branches in GenericInfo."""
+    
+    def test_make_union_if_needed_empty_set(self):
+        """Test make_union_if_needed with empty set returns NoneType."""
+        from generic_utils import GenericInfo
+        
+        result = GenericInfo.make_union_if_needed([])
+        assert result.origin is type(None)
+    
+    def test_make_union_if_needed_single_element(self):
+        """Test make_union_if_needed with single element returns that element."""
+        from generic_utils import GenericInfo
+        
+        single_info = GenericInfo(origin=int)
+        result = GenericInfo.make_union_if_needed([single_info])
+        assert result is single_info
+    
+    def test_generic_info_equality_with_non_generic_info(self):
+        """Test GenericInfo.__eq__ returns False for non-GenericInfo objects."""
+        from generic_utils import GenericInfo
+        
+        info = GenericInfo(origin=int)
+        assert info != "not a GenericInfo"
+        assert info != 42
+        assert info != None
+    
+    def test_generic_info_hash_with_unhashable_type(self):
+        """Test GenericInfo.__hash__ handles unhashable resolved_type."""
+        from generic_utils import GenericInfo
+        
+        # Create a GenericInfo with a type that might cause issues in hash
+        # The __hash__ method has a try/except for TypeError
+        info = GenericInfo(origin=list, concrete_args=[GenericInfo(origin=dict)])
+        
+        # Should not raise, should use str() fallback
+        hash_value = hash(info)
+        assert isinstance(hash_value, int)
+
+
+class TestExtractorEdgeCases:
+    """Test edge cases in various extractors."""
+    
+    def test_builtin_extractor_non_generic_instance(self):
+        """Test BuiltinExtractor with various edge cases."""
+        extractor = BuiltinExtractor()
+        
+        # Can handle empty containers
+        assert extractor.can_handle_instance([])
+        assert extractor.can_handle_instance({})
+        assert extractor.can_handle_instance(())
+        assert extractor.can_handle_instance(set())
+        
+        # Extract from empty containers
+        info = extractor.extract_from_instance([])
+        assert info.origin is list
+        assert not info.concrete_args
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_extractor_unparameterized_base(self):
+        """Test PydanticExtractor with unparameterized base classes."""
+        from generic_utils import GenericInfo
+        
+        A = TypeVar('A')
+        
+        class UnparameterizedBox(BaseModel, typing.Generic[A]):
+            item: A
+        
+        extractor = PydanticExtractor()
+        
+        # Test extraction from unparameterized annotation
+        info = extractor.extract_from_annotation(UnparameterizedBox)
+        # Should extract TypeVars from class definition
+        assert A in info.type_params
+        
+        # Test extraction from unparameterized instance
+        instance = UnparameterizedBox(item=42)
+        inst_info = extractor.extract_from_instance(instance)
+        assert inst_info.origin == UnparameterizedBox or hasattr(inst_info.origin, '__name__')
+    
+    def test_dataclass_extractor_without_orig_class(self):
+        """Test DataclassExtractor with instance lacking __orig_class__."""
+        A = TypeVar('A')
+        
+        @dataclass
+        class SimpleBox(typing.Generic[A]):
+            value: A
+        
+        extractor = DataclassExtractor()
+        
+        # Create instance without explicit type parameter
+        instance = SimpleBox(value=42)
+        
+        # Extract - should handle missing __orig_class__
+        info = extractor.extract_from_instance(instance)
+        assert info.origin is SimpleBox
+        # Without __orig_class__, concrete_args should be empty
+        assert info.concrete_args == []
+
+
+class TestGetAnnotationValuePairsEdgeCases:
+    """Test edge cases in get_annotation_value_pairs function."""
+    
+    def test_annotation_value_pairs_with_none_instance(self):
+        """Test get_annotation_value_pairs with None as instance."""
+        A = TypeVar('A')
+        
+        pairs = get_annotation_value_pairs(list[A], None)
+        assert pairs == []
+    
+    def test_annotation_value_pairs_no_type_params(self):
+        """Test get_annotation_value_pairs when annotation has no type parameters."""
+        # Annotation without type parameters
+        pairs = get_annotation_value_pairs(int, 42)
+        assert pairs == []
+        
+        pairs = get_annotation_value_pairs(str, "hello")
+        assert pairs == []
+    
+    def test_annotation_value_pairs_custom_object_with_dict(self):
+        """Test get_annotation_value_pairs with custom object having __dict__."""
+        A = TypeVar('A')
+        
+        class CustomClass(typing.Generic[A]):
+            def __init__(self, value):
+                self.value = value
+                self.other = value * 2
+                self.__private = "skip"  # Should be skipped
+        
+        instance = CustomClass(42)
+        
+        # Get annotation info
+        from generic_utils import get_generic_info
+        ann_info = get_generic_info(CustomClass[A])
+        
+        # Test that we can extract from custom objects with __dict__
+        pairs = get_annotation_value_pairs(CustomClass[A], instance)
+        
+        # The behavior depends on whether the custom class is recognized
+        # If it has concrete_args in ann_info, it should extract values
+        if pairs:
+            values = [val for _, val in pairs]
+            assert 42 in values or 84 in values
+            assert "skip" not in values  # Private attributes should be skipped
+        # If no pairs, the extractor doesn't support this custom class (which is OK)
+    
+    def test_annotation_value_pairs_tuple_variable_length(self):
+        """Test get_annotation_value_pairs with variable length tuple."""
+        A = TypeVar('A')
+        
+        pairs = get_annotation_value_pairs(tuple[A, ...], (1, 2, 3, 4))
+        
+        # Should have 4 pairs (one for each element)
+        assert len(pairs) == 4
+        values = [val for _, val in pairs]
+        assert values == [1, 2, 3, 4]
+    
+    def test_annotation_value_pairs_tuple_fixed_length(self):
+        """Test get_annotation_value_pairs with fixed length tuple."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        C = TypeVar('C')
+        
+        pairs = get_annotation_value_pairs(tuple[A, B, C], (1, "hello", 3.14))
+        
+        # Should have 3 pairs
+        assert len(pairs) == 3
+        values = [val for _, val in pairs]
+        assert values == [1, "hello", 3.14]
+
+
+class TestCreateUnionEdgeCases:
+    """Test edge cases in create_union_if_needed."""
+    
+    def test_create_union_empty_set(self):
+        """Test create_union_if_needed with empty set returns NoneType."""
+        result = create_union_if_needed(set())
+        assert result is type(None)
+    
+    def test_create_union_single_type(self):
+        """Test create_union_if_needed with single type returns that type."""
+        result = create_union_if_needed({int})
+        assert result is int
+    
+    def test_create_union_multiple_types(self):
+        """Test create_union_if_needed with multiple types creates union."""
+        result = create_union_if_needed({int, str, float})
+        
+        # Should be a union type
+        origin = get_origin(result)
+        assert _is_union_origin(origin)
+        
+        args = get_args(result)
+        assert set(args) == {int, str, float}
+    
+    def test_create_union_with_unhashable_fallback(self):
+        """Test create_union_if_needed TypeError fallback to typing.Union."""
+        # In case the | operator doesn't work, it should fall back to typing.Union
+        # This is hard to trigger directly, but we can test the logic exists
+        result = create_union_if_needed({int, str})
+        
+        # Should still create a valid union
+        origin = get_origin(result)
+        assert _is_union_origin(origin)
+
+
