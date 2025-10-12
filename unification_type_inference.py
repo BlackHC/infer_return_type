@@ -176,6 +176,18 @@ class UnificationEngine:
             # Handle custom generic types using unified interface
             self._handle_custom_generic_constraints(annotation, value, constraints)
     
+    def _add_covariant_constraints_for_elements(
+        self, typevar: TypeVar, values, constraints: List[Constraint]
+    ):
+        """
+        Add separate covariant constraints for each distinct type in values.
+        
+        This allows proper union formation and bound checking in the constraint solver.
+        """
+        element_types = {type(item) for item in values}
+        for element_type in element_types:
+            constraints.append(Constraint(typevar, element_type, Variance.COVARIANT))
+    
     def _handle_union_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Handle Union type constraints by trying each alternative."""
         args = get_concrete_args(annotation)
@@ -232,9 +244,11 @@ class UnificationEngine:
             if isinstance(element_annotation_info.origin, TypeVar):
                 # Collect types from all elements
                 if value:
-                    element_types = {type(item) for item in value}
-                    union_type = create_union_if_needed(element_types)
-                    constraints.append(Constraint(element_annotation_info.origin, union_type, Variance.COVARIANT))
+                    # Create separate constraints for each distinct type
+                    # This allows proper union formation and bound checking
+                    self._add_covariant_constraints_for_elements(
+                        element_annotation_info.origin, value, constraints
+                    )
                 # If empty list, don't add constraint - will be handled later
             else:
                 # Handle Union inside List specially
@@ -243,8 +257,13 @@ class UnificationEngine:
                 if origin is Union:
                     # For List[Union[A, B]] with values [int, str], we need to collect constraints differently
                     union_args = get_concrete_args(element_annotation)
+                    
+                    # Try to distribute types among TypeVars in the union
+                    if self._try_distribute_union_types(set(value), union_args, constraints):
+                        return
+                    
+                    # Fallback: match each item to union alternatives
                     for item in value:
-                        # Try to match item against union alternatives
                         self._match_value_to_union_alternatives(item, union_args, constraints)
                 else:
                     # Recursively handle each element
@@ -292,9 +311,11 @@ class UnificationEngine:
             # Variable length tuple: Tuple[T, ...]
             element_annotation_info = args[0]
             if isinstance(element_annotation_info.origin, TypeVar) and value:
-                element_types = {type(item) for item in value}
-                union_type = create_union_if_needed(element_types)
-                constraints.append(Constraint(element_annotation_info.origin, union_type, Variance.COVARIANT))
+                # Create separate constraints for each distinct type
+                # This allows proper union formation and bound checking
+                self._add_covariant_constraints_for_elements(
+                    element_annotation_info.origin, value, constraints
+                )
             elif not isinstance(element_annotation_info.origin, TypeVar):
                 element_annotation = element_annotation_info.resolved_type
                 for item in value:
@@ -323,15 +344,23 @@ class UnificationEngine:
             
             if isinstance(element_annotation_info.origin, TypeVar):
                 if value:
-                    element_types = {type(item) for item in value}
-                    union_type = create_union_if_needed(element_types)
-                    constraints.append(Constraint(element_annotation_info.origin, union_type, Variance.COVARIANT))
+                    # Create separate constraints for each distinct type
+                    # This allows proper union formation and bound checking
+                    self._add_covariant_constraints_for_elements(
+                        element_annotation_info.origin, value, constraints
+                    )
             else:
                 # Check if this is a Union type
                 element_annotation = element_annotation_info.resolved_type
                 origin = get_generic_origin(element_annotation)
                 if origin is Union:
                     union_args = get_concrete_args(element_annotation)
+                    
+                    # Try to distribute types among TypeVars in the union
+                    if self._try_distribute_union_types(value, union_args, constraints):
+                        return
+                    
+                    # Fallback: match each item to union alternatives
                     for item in value:
                         self._match_value_to_union_alternatives(item, union_args, constraints)
                 else:
@@ -789,8 +818,10 @@ class UnificationEngine:
         invariant_constraints = [c for c in constraints if c.variance == Variance.INVARIANT]
         
         # If we have covariant constraints (like List[A] with mixed elements), form union
+        # Preserve type precision - only collapse to supertype if TypeVar bound requires it
         if covariant_constraints and not invariant_constraints:
-            return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
+            union_type = create_union_if_needed(set(concrete_types))
+            return self._check_typevar_bounds(typevar, union_type)
         
         # If we have multiple invariant constraints with different types, form a union
         # This handles cases like: def identity(a: A, b: A) -> A with identity(1, 'x')
@@ -825,13 +856,59 @@ class UnificationEngine:
         
         # Check bound (e.g., TypeVar('T', bound=int))
         if typevar.__bound__:
-            if not _is_subtype(concrete_type, typevar.__bound__):
-                raise UnificationError(
-                    f"Type {concrete_type} doesn't satisfy bound {typevar.__bound__} for {typevar}"
-                )
+            # For union types, check if all components satisfy the bound
+            origin = get_generic_origin(concrete_type)
+            if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
+                union_args = get_concrete_args(concrete_type)
+                # All components must satisfy the bound
+                for arg_info in union_args:
+                    arg_type = arg_info.resolved_type if hasattr(arg_info, 'resolved_type') else arg_info
+                    if not _is_subtype(arg_type, typevar.__bound__):
+                        raise UnificationError(
+                            f"Type {arg_type} in union {concrete_type} doesn't satisfy bound {typevar.__bound__} for {typevar}"
+                        )
+            else:
+                # Single type must satisfy the bound
+                if not _is_subtype(concrete_type, typevar.__bound__):
+                    raise UnificationError(
+                        f"Type {concrete_type} doesn't satisfy bound {typevar.__bound__} for {typevar}"
+                    )
         
         return concrete_type
 
+    def _try_distribute_union_types(self, values: set, union_alternatives: List, constraints: List[Constraint]) -> bool:
+        """
+        Try to distribute types from a set among TypeVars in a Union.
+        
+        For Set[Union[A, B]] with values {1, 'a', 2, 'b'}, distribute types so that
+        A=int and B=str (or vice versa), rather than A=int|str and B=int|str.
+        
+        Returns True if distribution was successful, False otherwise.
+        """
+        # Only works if all union alternatives are TypeVars
+        typevars = [alt.origin for alt in union_alternatives if isinstance(alt.origin, TypeVar)]
+        if len(typevars) != len(union_alternatives):
+            return False  # Some alternatives are not TypeVars
+        
+        # Collect distinct types from values
+        value_types = {type(v) for v in values}
+        
+        # Simple heuristic: if number of types equals number of TypeVars, distribute them
+        if len(value_types) == len(typevars):
+            # Sort for deterministic assignment
+            sorted_types = sorted(value_types, key=lambda t: t.__name__)
+            sorted_typevars = sorted(typevars, key=lambda tv: tv.__name__)
+            
+            # Assign one type to each TypeVar with INVARIANT variance
+            # INVARIANT ensures that each TypeVar gets exactly one type
+            for typevar, concrete_type in zip(sorted_typevars, sorted_types):
+                constraints.append(Constraint(typevar, concrete_type, Variance.INVARIANT))
+            
+            return True
+        
+        # Can't distribute evenly, fall back to default behavior
+        return False
+    
     def _match_value_to_union_alternatives(self, value: Any, union_alternatives: List, constraints: List[Constraint]):
         """Match a value against union alternatives and collect constraints."""
         value_type = type(value)
@@ -896,19 +973,6 @@ class UnificationEngine:
             for alt_info in union_alternatives:
                 if isinstance(alt_info.origin, TypeVar):
                     constraints.append(Constraint(alt_info.origin, value_type, Variance.INVARIANT))
-
-
-def _find_common_supertype(types_list: List[type]) -> type:
-    """Find the most specific common supertype of a list of types."""
-    if not types_list:
-        return type(None)
-    
-    if len(types_list) == 1:
-        return types_list[0]
-    
-    # Simplified implementation - in practice would need more sophisticated MRO analysis
-    # For now, just return Union
-    return create_union_if_needed(set(types_list))
 
 
 def _is_subtype(subtype: type, supertype: type) -> bool:
