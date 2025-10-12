@@ -17,9 +17,7 @@ from dataclasses import dataclass
 
 from generic_utils import (
     BuiltinExtractor, DataclassExtractor, GenericTypeUtils, PydanticExtractor, UnionExtractor,
-    create_union_if_needed, extract_all_typevars, get_annotation_value_pairs, get_concrete_args, 
-    get_generic_info, get_generic_origin, get_instance_concrete_args, get_instance_generic_info, 
-    get_resolved_type, get_type_parameters, is_generic_type
+    create_union_if_needed, get_annotation_value_pairs, get_generic_info, get_instance_generic_info
 )
 
 # Test TypeVars
@@ -287,12 +285,12 @@ class TestGenericTypeUtils:
         assert info.is_generic
         
         # TypeVars
-        type_params = utils.get_type_parameters(list[A])
-        assert A in type_params
+        info = utils.get_generic_info(list[A])
+        assert A in info.type_params
         
         # Instance extraction returns no args (structural only)
-        instance_args = utils.get_instance_concrete_args([1, 2, 3])
-        assert len(instance_args) == 0
+        instance_info = utils.get_instance_generic_info([1, 2, 3])
+        assert len(instance_info.concrete_args) == 0
     
     @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
     def test_pydantic_types(self):
@@ -307,9 +305,9 @@ class TestGenericTypeUtils:
         
         # Instance
         instance = PydanticBox[str](item="hello")
-        instance_args = utils.get_instance_concrete_args(instance)
-        assert len(instance_args) == 1
-        assert instance_args[0].resolved_type == str
+        instance_info = utils.get_instance_generic_info(instance)
+        assert len(instance_info.concrete_args) == 1
+        assert instance_info.concrete_args[0].resolved_type == str
     
     def test_dataclass_types(self):
         utils = GenericTypeUtils()
@@ -322,9 +320,9 @@ class TestGenericTypeUtils:
         # Instance with __orig_class__
         instance = DataclassBox[int](item=42)
         instance.__orig_class__ = DataclassBox[int]
-        instance_args = utils.get_instance_concrete_args(instance)
-        assert len(instance_args) == 1
-        assert instance_args[0].resolved_type == int
+        instance_info = utils.get_instance_generic_info(instance)
+        assert len(instance_info.concrete_args) == 1
+        assert instance_info.concrete_args[0].resolved_type == int
     
     def test_non_generic_types(self):
         utils = GenericTypeUtils()
@@ -345,31 +343,31 @@ class TestGenericTypeUtils:
         utils = GenericTypeUtils()
         
         # Simple case
-        typevars = utils.extract_all_typevars(list[A])
-        assert typevars == [A]
+        info = utils.get_generic_info(list[A])
+        assert info.type_params == [A]
         
         # Nested case
-        typevars = utils.extract_all_typevars(dict[A, list[B]])
-        assert set(typevars) == {A, B}
+        info = utils.get_generic_info(dict[A, list[B]])
+        assert set(info.type_params) == {A, B}
         
         # Deep nesting
-        typevars = utils.extract_all_typevars(list[dict[A, tuple[B, int]]])
-        assert set(typevars) == {A, B}
+        info = utils.get_generic_info(list[dict[A, tuple[B, int]]])
+        assert set(info.type_params) == {A, B}
         
         # No TypeVars
-        typevars = utils.extract_all_typevars(list[int])
-        assert typevars == []
+        info = utils.get_generic_info(list[int])
+        assert info.type_params == []
     
     def test_union_types(self):
         utils = GenericTypeUtils()
         
         # Union with TypeVars
-        typevars = utils.extract_all_typevars(Union[A, B])
-        assert set(typevars) == {A, B}
+        info = utils.get_generic_info(Union[A, B])
+        assert set(info.type_params) == {A, B}
         
         # Nested Union
-        typevars = utils.extract_all_typevars(list[Union[A, int]])
-        assert typevars == [A]
+        info = utils.get_generic_info(list[Union[A, int]])
+        assert info.type_params == [A]
 
 class TestConvenienceFunctions:
     """Test the module-level convenience functions."""
@@ -381,36 +379,36 @@ class TestConvenienceFunctions:
         assert info.is_generic
     
     def test_get_type_parameters(self):
-        params = get_type_parameters(dict[A, B])
-        assert set(params) == {A, B}
+        info = get_generic_info(dict[A, B])
+        assert set(info.type_params) == {A, B}
     
     def test_get_concrete_args(self):
-        args = get_concrete_args(tuple[int, str])
-        assert len(args) == 2
-        assert args[0].resolved_type == int
-        assert args[1].resolved_type == str
+        info = get_generic_info(tuple[int, str])
+        assert len(info.concrete_args) == 2
+        assert info.concrete_args[0].resolved_type == int
+        assert info.concrete_args[1].resolved_type == str
     
     def test_get_instance_concrete_args(self):
         """Test instance concrete args extraction."""
-        args = get_instance_concrete_args([1, 2, 3])
-        assert len(args) == 0
+        info = get_instance_generic_info([1, 2, 3])
+        assert len(info.concrete_args) == 0
     
     def test_get_generic_origin(self):
-        origin = get_generic_origin(list[int])
-        assert origin is list
+        info = get_generic_info(list[int])
+        assert info.origin is list
         
-        origin = get_generic_origin(str)
-        assert origin is str
+        info = get_generic_info(str)
+        assert info.origin is str
     
     def test_is_generic_type(self):
-        assert is_generic_type(list[int])
-        assert is_generic_type(dict[A, B])
-        assert not is_generic_type(str)
-        assert not is_generic_type(int)
+        assert get_generic_info(list[int]).is_generic
+        assert get_generic_info(dict[A, B]).is_generic
+        assert not get_generic_info(str).is_generic
+        assert not get_generic_info(int).is_generic
     
     def test_extract_all_typevars(self):
-        typevars = extract_all_typevars(list[dict[A, B]])
-        assert set(typevars) == {A, B}
+        info = get_generic_info(list[dict[A, B]])
+        assert set(info.type_params) == {A, B}
 
 class TestComplexScenarios:
     """Test complex nested scenarios."""
@@ -419,10 +417,8 @@ class TestComplexScenarios:
         # list[dict[str, tuple[int, float, set[A]]]]
         annotation = list[dict[str, tuple[int, float, set[A]]]]
         
-        typevars = extract_all_typevars(annotation)
-        assert typevars == [A]
-        
         info = get_generic_info(annotation)
+        assert info.type_params == [A]
         assert info.origin is list
         assert len(info.resolved_concrete_args) == 1
         assert info.resolved_concrete_args[0] == dict[str, tuple[int, float, set[A]]]
@@ -433,31 +429,31 @@ class TestComplexScenarios:
         # list[PydanticBox[A]]
         annotation = list[PydanticBox[B]]
         
-        typevars = extract_all_typevars(annotation)
-        assert B in typevars
+        info = get_generic_info(annotation)
+        assert B in info.type_params
         
         # Instance extraction returns no args (structural only)
         box_instance = PydanticBox[int](item=42)
         list_instance = [box_instance]
         
-        list_args = get_instance_concrete_args(list_instance)
-        assert len(list_args) == 0
+        list_info = get_instance_generic_info(list_instance)
+        assert len(list_info.concrete_args) == 0
     
     def test_union_with_generics(self):
         # Union[list[A], dict[B, int]]
         annotation = Union[list[A], dict[B, int]]
         
-        typevars = extract_all_typevars(annotation)
-        assert set(typevars) == {A, B}
+        info = get_generic_info(annotation)
+        assert set(info.type_params) == {A, B}
     
     def test_bound_typevars(self):
-        params = get_type_parameters(list[T])
-        assert params == [T]
-        assert params[0].__bound__ is str
+        info = get_generic_info(list[T])
+        assert info.type_params == [T]
+        assert info.type_params[0].__bound__ is str
         
-        params = get_type_parameters(dict[U, int])
-        assert params == [U]
-        assert params[0].__constraints__ == (int, float)
+        info = get_generic_info(dict[U, int])
+        assert info.type_params == [U]
+        assert info.type_params[0].__constraints__ == (int, float)
     
     def test_nested_typevar_extraction_builtin(self):
         """Test that nested TypeVars are properly extracted from built-in types."""
@@ -642,20 +638,20 @@ class TestModernUnionTypes:
         B = TypeVar('B')
         
         # Simple A | B
-        typevars = extract_all_typevars(A | B)
-        assert set(typevars) == {A, B}
+        info = get_generic_info(A | B)
+        assert set(info.type_params) == {A, B}
         
         # Nested: list[A | B]
-        typevars = extract_all_typevars(list[A | B])
-        assert set(typevars) == {A, B}
+        info = get_generic_info(list[A | B])
+        assert set(info.type_params) == {A, B}
         
         # Complex nesting: dict[A | str, list[B | int]]
-        typevars = extract_all_typevars(dict[A | str, list[B | int]])
-        assert set(typevars) == {A, B}
+        info = get_generic_info(dict[A | str, list[B | int]])
+        assert set(info.type_params) == {A, B}
         
         # Mixed with concrete types: tuple[A | int, str | B]
-        typevars = extract_all_typevars(tuple[A | int, str | B])
-        assert set(typevars) == {A, B}
+        info = get_generic_info(tuple[A | int, str | B])
+        assert set(info.type_params) == {A, B}
     
     
     @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
@@ -760,8 +756,8 @@ class TestModernUnionTypes:
         # Complex nesting: list[dict[A | str, tuple[B | int, set[A | B]]]]
         complex_annotation = list[dict[A | str, tuple[B | int, set[A | B]]]]
         
-        typevars = extract_all_typevars(complex_annotation)
-        assert set(typevars) == {A, B}
+        info = get_generic_info(complex_annotation)
+        assert set(info.type_params) == {A, B}
         
         info = get_generic_info(complex_annotation)
         assert info.origin is list
@@ -812,31 +808,26 @@ class TestModernUnionTypes:
         # TypeVar unions might be converted to typing.Union
         assert _is_union_origin(union_arg.origin)
         
-        # get_type_parameters
-        params = get_type_parameters(modern_list_union)
-        assert set(params) == {A, B}
+        # get_type_parameters (via type_params property)
+        assert set(info.type_params) == {A, B}
         
-        # get_concrete_args
-        args = get_concrete_args(modern_list_union)
-        assert len(args) == 1
+        # get_concrete_args (via concrete_args property)
+        assert len(info.concrete_args) == 1
         # TypeVar unions might be converted to typing.Union
-        assert _is_union_origin(args[0].origin)
+        assert _is_union_origin(info.concrete_args[0].origin)
         
-        # get_generic_origin
-        origin = get_generic_origin(modern_list_union)
-        assert origin is list
+        # get_generic_origin (via origin property)
+        assert info.origin is list
         
-        # is_generic_type
-        assert is_generic_type(modern_list_union)
-        assert is_generic_type(A | B)
+        # is_generic_type (via is_generic property)
+        assert get_generic_info(modern_list_union).is_generic
+        assert get_generic_info(A | B).is_generic
         
-        # get_resolved_type
-        resolved = get_resolved_type(modern_list_union)
-        assert get_origin(resolved) is list
+        # get_resolved_type (via resolved_type property)
+        assert get_origin(info.resolved_type) is list
         
-        # extract_all_typevars
-        all_typevars = extract_all_typevars(modern_list_union)
-        assert set(all_typevars) == {A, B}
+        # extract_all_typevars (via type_params property)
+        assert set(info.type_params) == {A, B}
     
     
     def test_modern_union_with_none(self):
@@ -845,10 +836,9 @@ class TestModernUnionTypes:
         
         # A | None
         optional_typevar = A | None
-        typevars = extract_all_typevars(optional_typevar)
-        assert typevars == [A]
-        
         info = get_generic_info(optional_typevar)
+        assert info.type_params == [A]
+        
         # TypeVar unions might be converted to typing.Union
         assert _is_union_origin(info.origin)
         assert A in info.type_params

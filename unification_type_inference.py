@@ -21,8 +21,7 @@ from collections import defaultdict
 
 # Import unified generic utilities
 from generic_utils import (
-    GenericTypeUtils, get_generic_info, get_concrete_args,
-    get_generic_origin, create_union_if_needed, get_annotation_value_pairs
+    GenericTypeUtils, get_generic_info, create_union_if_needed, get_annotation_value_pairs
 )
 
 
@@ -140,8 +139,9 @@ class UnificationEngine:
             return
         
         # Handle Union types using generic_utils
-        origin = get_generic_origin(annotation)
-        args = get_concrete_args(annotation)
+        info = get_generic_info(annotation)
+        origin = info.origin
+        args = info.concrete_args
         
         if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
             self._handle_union_constraints(annotation, value, constraints)
@@ -191,7 +191,7 @@ class UnificationEngine:
     
     def _handle_union_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Handle Union type constraints by trying each alternative."""
-        args = get_concrete_args(annotation)
+        args = get_generic_info(annotation).concrete_args
         
         # Try each union alternative
         best_constraints = None
@@ -216,7 +216,7 @@ class UnificationEngine:
                 # Bonus points for matching structured types (not just bare TypeVar)
                 if not isinstance(alternative_info.origin, TypeVar):
                     # Check if the alternative structure matches the value structure
-                    alt_origin = get_generic_origin(alternative_info.resolved_type)
+                    alt_origin = get_generic_info(alternative_info.resolved_type).origin
                     value_type = type(value)
                     if alt_origin and alt_origin == value_type:
                         # Perfect structure match - prefer this
@@ -238,7 +238,7 @@ class UnificationEngine:
         if not isinstance(value, list):
             raise UnificationError(f"Expected list, got {type(value)}")
         
-        args = get_concrete_args(annotation)
+        args = get_generic_info(annotation).concrete_args
         if len(args) == 1:
             element_annotation_info = args[0]
             
@@ -254,10 +254,10 @@ class UnificationEngine:
             else:
                 # Handle Union inside List specially
                 element_annotation = element_annotation_info.resolved_type
-                origin = get_generic_origin(element_annotation)
-                if origin is Union:
+                element_info = get_generic_info(element_annotation)
+                if element_info.origin is Union:
                     # For List[Union[A, B]] with values [int, str], we need to collect constraints differently
-                    union_args = get_concrete_args(element_annotation)
+                    union_args = element_info.concrete_args
                     
                     # Try to distribute types among TypeVars in the union
                     if self._try_distribute_union_types(set(value), union_args, constraints):
@@ -276,7 +276,7 @@ class UnificationEngine:
         if not isinstance(value, dict):
             raise UnificationError(f"Expected dict, got {type(value)}")
         
-        args = get_concrete_args(annotation)
+        args = get_generic_info(annotation).concrete_args
         if len(args) == 2:
             key_annotation_info, value_annotation_info = args
             
@@ -306,7 +306,7 @@ class UnificationEngine:
         if not isinstance(value, tuple):
             raise UnificationError(f"Expected tuple, got {type(value)}")
         
-        args = get_concrete_args(annotation)
+        args = get_generic_info(annotation).concrete_args
         
         if len(args) == 2 and args[1].origin is ...:
             # Variable length tuple: Tuple[T, ...]
@@ -339,7 +339,7 @@ class UnificationEngine:
         if not isinstance(value, set):
             raise UnificationError(f"Expected set, got {type(value)}")
         
-        args = get_concrete_args(annotation)
+        args = get_generic_info(annotation).concrete_args
         if len(args) == 1:
             element_annotation_info = args[0]
             
@@ -353,9 +353,9 @@ class UnificationEngine:
             else:
                 # Check if this is a Union type
                 element_annotation = element_annotation_info.resolved_type
-                origin = get_generic_origin(element_annotation)
-                if origin is Union:
-                    union_args = get_concrete_args(element_annotation)
+                element_info = get_generic_info(element_annotation)
+                if element_info.origin is Union:
+                    union_args = element_info.concrete_args
                     
                     # Try to distribute types among TypeVars in the union
                     if self._try_distribute_union_types(value, union_args, constraints):

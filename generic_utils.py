@@ -349,41 +349,6 @@ class GenericTypeUtils:
         # Fallback for non-generic instances
         return GenericInfo(origin=type(instance))
 
-    def get_type_parameters(self, annotation: Any) -> List[TypeVar]:
-        """Extract TypeVar parameters from any generic annotation."""
-        info = self.get_generic_info(annotation)
-        return info.type_params
-
-    def get_concrete_args(self, annotation: Any) -> List[GenericInfo]:
-        """Extract concrete type arguments from any generic annotation."""
-        info = self.get_generic_info(annotation)
-        return info.concrete_args
-
-    def get_instance_concrete_args(self, instance: Any) -> List[GenericInfo]:
-        """Extract concrete type arguments from any generic instance."""
-        info = self.get_instance_generic_info(instance)
-        return info.concrete_args
-
-    def get_generic_origin(self, annotation: Any) -> Any:
-        """Get the generic origin from any annotation."""
-        info = self.get_generic_info(annotation)
-        return info.origin
-
-    def is_generic_type(self, annotation: Any) -> bool:
-        """Check if an annotation represents a generic type."""
-        info = self.get_generic_info(annotation)
-        return info.is_generic
-
-    def get_resolved_type(self, annotation: Any) -> Any:
-        """Get the fully resolved/materialized type from an annotation."""
-        info = self.get_generic_info(annotation)
-        return info.resolved_type
-
-    def extract_all_typevars(self, annotation: Any) -> List[TypeVar]:
-        """Recursively extract all TypeVars from a nested annotation structure."""
-        generic_info = self.get_generic_info(annotation)
-        return generic_info.type_params
-
 
 def create_union_if_needed(types_set: set) -> Any:
     """Create a Union type if needed, or return single type.
@@ -419,41 +384,6 @@ def get_generic_info(annotation: Any) -> GenericInfo:
 def get_instance_generic_info(instance: Any) -> GenericInfo:
     """Extract generic type information from an instance."""
     return generic_utils.get_instance_generic_info(instance)
-
-
-def get_type_parameters(annotation: Any) -> List[TypeVar]:
-    """Extract TypeVar parameters from any generic annotation."""
-    return generic_utils.get_type_parameters(annotation)
-
-
-def get_concrete_args(annotation: Any) -> List[GenericInfo]:
-    """Extract concrete type arguments from any generic annotation."""
-    return generic_utils.get_concrete_args(annotation)
-
-
-def get_instance_concrete_args(instance: Any) -> List[GenericInfo]:
-    """Extract concrete type arguments from any generic instance."""
-    return generic_utils.get_instance_concrete_args(instance)
-
-
-def get_generic_origin(annotation: Any) -> Any:
-    """Get the generic origin from any annotation."""
-    return generic_utils.get_generic_origin(annotation)
-
-
-def is_generic_type(annotation: Any) -> bool:
-    """Check if an annotation represents a generic type."""
-    return generic_utils.is_generic_type(annotation)
-
-
-def get_resolved_type(annotation: Any) -> Any:
-    """Get the fully resolved/materialized type from an annotation."""
-    return generic_utils.get_resolved_type(annotation)
-
-
-def extract_all_typevars(annotation: Any) -> List[TypeVar]:
-    """Recursively extract all TypeVars from a nested annotation structure."""
-    return generic_utils.extract_all_typevars(annotation)
 
 
 def get_annotation_value_pairs(annotation: Any, instance: Any) -> List[Tuple["GenericInfo", Any]]:
