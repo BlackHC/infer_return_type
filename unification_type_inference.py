@@ -13,19 +13,16 @@ where we unify annotation structures with concrete value types.
 """
 
 import inspect
-import typing
 import types
-from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar, Union, get_origin, get_args
+from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar, Union
 from dataclasses import fields, is_dataclass
-from abc import ABC, abstractmethod
 from enum import Enum
 from collections import defaultdict
 
 # Import unified generic utilities
 from generic_utils import (
-    GenericTypeUtils, get_generic_info, get_instance_generic_info, 
-    get_type_parameters, get_concrete_args, get_instance_concrete_args,
-    get_generic_origin, is_generic_type, extract_all_typevars, create_union_if_needed
+    GenericTypeUtils, get_generic_info, get_concrete_args,
+    get_generic_origin, create_union_if_needed, get_annotation_value_pairs
 )
 
 
@@ -151,17 +148,21 @@ class UnificationEngine:
             return
         
         # Handle Optional (Union[T, None])
-        if origin is Union and len(args) == 2 and type(None) in args:
-            if value is not None:
-                non_none_type = args[0] if args[1] is type(None) else args[1]
-                self._collect_constraints_internal(non_none_type, value, constraints)
-            else:
-                # Value is None - we still need to handle the TypeVar
-                non_none_type = args[0] if args[1] is type(None) else args[1]
-                if isinstance(non_none_type, TypeVar):
-                    # For Optional[A] with None value, we can't infer A but shouldn't fail
-                    pass
-            return
+        if origin is Union and len(args) == 2:
+            # Check if one of the args is NoneType
+            has_none = any(arg_info.origin is type(None) for arg_info in args)
+            if has_none:
+                if value is not None:
+                    # Find the non-None type
+                    non_none_type = args[0].resolved_type if args[1].origin is type(None) else args[1].resolved_type
+                    self._collect_constraints_internal(non_none_type, value, constraints)
+                else:
+                    # Value is None - we still need to handle the TypeVar
+                    non_none_type_info = args[0] if args[1].origin is type(None) else args[1]
+                    if isinstance(non_none_type_info.origin, TypeVar):
+                        # For Optional[A] with None value, we can't infer A but shouldn't fail
+                        pass
+                return
         
         # Handle generic containers
         if origin in (list, List):
@@ -409,9 +410,6 @@ class UnificationEngine:
         if self._try_direct_generic_structure_matching(annotation, value, constraints):
             return True
         
-        # Import the function from generic_utils
-        from generic_utils import get_annotation_value_pairs
-        
         try:
             pairs = get_annotation_value_pairs(annotation, value)
             if not pairs:
@@ -538,7 +536,6 @@ class UnificationEngine:
             
             if element_types:
                 # Create a union type from all the element types
-                from generic_utils import create_union_if_needed
                 union_type = create_union_if_needed(element_types)
                 constraints.append(Constraint(typevar, union_type, Variance.COVARIANT))
                 return
@@ -549,7 +546,6 @@ class UnificationEngine:
             if value_info.is_generic and value_info.concrete_args:
                 deepest_args = self._extract_deepest_type_args(value_info)
                 if deepest_args:
-                    from generic_utils import create_union_if_needed
                     union_type = create_union_if_needed(set(deepest_args))
                     constraints.append(Constraint(typevar, union_type, Variance.COVARIANT))
                     return
@@ -836,33 +832,31 @@ class UnificationEngine:
         return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
     
     def _check_typevar_bounds(self, typevar: TypeVar, concrete_type: type) -> type:
-        """Check if concrete type satisfies TypeVar bounds and constraints."""
+        """Check if concrete type satisfies TypeVar bounds and constraints.
+        
+        Per PEP 484, constrained TypeVars must resolve to exactly ONE of the specified types,
+        not a union of them. Union types are rejected for constrained TypeVars.
+        """
+        
+        # Get type information using generic_utils
+        type_info = get_generic_info(concrete_type)
+        origin = type_info.origin
         
         # Check explicit constraints (e.g., TypeVar('T', int, str))
         if typevar.__constraints__:
             if concrete_type not in typevar.__constraints__:
-                # For Union types, check if all components are in constraints
-                origin = get_generic_origin(concrete_type)
-                if origin is Union:
-                    union_args = get_concrete_args(concrete_type)
-                    if not all(arg in typevar.__constraints__ for arg in union_args):
-                        raise UnificationError(
-                            f"Type {concrete_type} violates constraints {typevar.__constraints__} for {typevar}"
-                        )
-                else:
-                    raise UnificationError(
-                        f"Type {concrete_type} violates constraints {typevar.__constraints__} for {typevar}"
-                    )
+                raise UnificationError(
+                    f"Type {concrete_type} violates constraints {typevar.__constraints__} for {typevar}"
+                )
         
         # Check bound (e.g., TypeVar('T', bound=int))
         if typevar.__bound__:
             # For union types, check if all components satisfy the bound
-            origin = get_generic_origin(concrete_type)
             if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
-                union_args = get_concrete_args(concrete_type)
+                union_args = type_info.concrete_args
                 # All components must satisfy the bound
                 for arg_info in union_args:
-                    arg_type = arg_info.resolved_type if hasattr(arg_info, 'resolved_type') else arg_info
+                    arg_type = arg_info.resolved_type
                     if not _is_subtype(arg_type, typevar.__bound__):
                         raise UnificationError(
                             f"Type {arg_type} in union {concrete_type} doesn't satisfy bound {typevar.__bound__} for {typevar}"
@@ -1035,22 +1029,19 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
             # Instead of failing, return the TypeVar as-is - this will be caught later
             return annotation
     
-    origin = get_generic_origin(annotation)
-    args_info = get_concrete_args(annotation)
+    # Use generic_utils to get type information
+    type_info = get_generic_info(annotation)
+    origin = type_info.origin
+    args_info = type_info.concrete_args
     
     if not origin or not args_info:
         return annotation
     
-    # Extract raw types from GenericInfo objects
-    args = []
-    for arg_info in args_info:
-        if hasattr(arg_info, 'resolved_type'):
-            args.append(arg_info.resolved_type)
-        else:
-            args.append(arg_info)
+    # Extract resolved types from GenericInfo objects
+    args = [arg_info.resolved_type for arg_info in args_info]
     
     # Handle Union types specially - only include bound TypeVars
-    if origin is Union:
+    if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
         substituted_args = []
         
         for arg in args:
@@ -1074,7 +1065,7 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
     for arg in args:
         substituted_args.append(_substitute_typevars(arg, bindings))
     
-    # Reconstruct the type
+    # Reconstruct the type using modern syntax
     if origin in (list, List):
         return list[substituted_args[0]]
     elif origin in (dict, Dict):
@@ -1083,7 +1074,7 @@ def _substitute_typevars(annotation: Any, bindings: Dict[TypeVar, type]) -> Any:
         return tuple[tuple(substituted_args)]
     elif origin in (set, Set):
         return set[substituted_args[0]]
-    elif origin is Union:
+    elif origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
         if len(substituted_args) == 1:
             return substituted_args[0]
         return create_union_if_needed(set(substituted_args))
@@ -1168,16 +1159,12 @@ def _has_unbound_typevars(annotation: Any) -> bool:
         return True
     
     # Use generic_utils for consistent handling
-    origin = get_generic_origin(annotation)
-    args_info = get_concrete_args(annotation)
+    type_info = get_generic_info(annotation)
     
-    if args_info:
-        # Extract resolved types from GenericInfo objects and recursively check
-        for arg_info in args_info:
-            if hasattr(arg_info, 'resolved_type'):
-                if _has_unbound_typevars(arg_info.resolved_type):
-                    return True
-            elif _has_unbound_typevars(arg_info):
+    if type_info.concrete_args:
+        # Recursively check each type argument
+        for arg_info in type_info.concrete_args:
+            if _has_unbound_typevars(arg_info.resolved_type):
                 return True
         return False
     

@@ -1855,19 +1855,57 @@ def test_constrained_typevar_violation():
 
 
 def test_union_in_constraints_checking():
-    """Test Union type constraint checking."""
+    """Test Union type constraint checking.
+    
+    Per PEP 484: Constrained TypeVars must resolve to exactly ONE of the specified types,
+    not a union of them. A union type like int | str violates the constraint requirement
+    for TypeVar('T', int, str) because T must be either int OR str consistently, not both.
+    
+    This matches the behavior of static type checkers like mypy, which would reject
+    mixed-type lists for constrained TypeVars.
+    """
     T_constrained = TypeVar('T_constrained', int, str)
     
     def process_mixed(items: List[T_constrained]) -> T_constrained: ...
     
-    # Mixed list creates union - NOTE: The current implementation treats union types
-    # as violating TypeVar constraints even when all components satisfy the constraint.
-    # This is a known limitation - union types like int | str are checked as a whole,
-    # not component-by-component against constrained TypeVars.
-    
-    # For now, this will raise an error, but ideally it should work
+    # Mixed list creates union type - this violates PEP 484 constraint semantics
+    # Static type checkers (mypy, pyright) would reject this, so should we
     with pytest.raises(TypeInferenceError, match="violates constraints"):
         t = infer_return_type(process_mixed, [1, "hello", 2])
+        
+        
+def test_union_in_constraints_checking_union():
+    """Test constrained TypeVar where constraints themselves are union types.
+    
+    This tests the edge case where TypeVar('T', int | str, float | list) has
+    union types as constraints. The inferred type must match one of these union constraints.
+    """
+    T_constrained = TypeVar('T_constrained', int | str, float | list)
+    
+    def process_mixed(items: List[T_constrained]) -> T_constrained: ...
+    
+    # Test 1: [1, "hello", 2] should infer int | str, matching first constraint
+    t = infer_return_type(process_mixed, [1, "hello", 2])
+    
+    # Should be int | str (or str | int - order doesn't matter for equality)
+    origin = typing.get_origin(t)
+    import types
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    
+    # The inferred union should match one of the constraints
+    assert t in T_constrained.__constraints__
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
+    
+    # Test 2: [1.5, [1,2]] should infer float | list, matching second constraint
+    t2 = infer_return_type(process_mixed, [1.5, [1, 2]])
+    assert t2 in T_constrained.__constraints__
+    union_args2 = typing.get_args(t2)
+    assert set(union_args2) == {float, list}
+    
+    # Test 3: [1, 1.5] should fail - int | float doesn't match either constraint
+    with pytest.raises(TypeInferenceError, match="violates constraints"):
+        infer_return_type(process_mixed, [1, 1.5])
 
 
 def test_empty_container_error_messages():
