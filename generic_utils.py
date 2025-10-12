@@ -51,19 +51,6 @@ class GenericInfo:
         """Whether this type has generic information (computed from concrete_args)."""
         return bool(self.concrete_args)
 
-    @staticmethod
-    def make_union_if_needed(sub_generic_infos: Iterable["GenericInfo"]) -> "GenericInfo":
-        """Create a union type from a list of GenericInfo objects."""
-        sub_generic_infos = set(sub_generic_infos)
-        if len(sub_generic_infos) == 1:
-            return next(iter(sub_generic_infos))
-        elif len(sub_generic_infos) > 1:
-            return GenericInfo(
-                origin=Union, concrete_args=list(sub_generic_infos)
-            )
-        else:
-            return GenericInfo(origin=type(None))
-
     def _compute_type_params(self) -> List[TypeVar]:
         """Compute TypeVars from concrete_args and their nested type_params."""
         seen = set()

@@ -1039,22 +1039,7 @@ class TestGetAnnotationValuePairs:
 
 class TestGenericInfoEdgeCases:
     """Test edge cases and uncovered branches in GenericInfo."""
-    
-    def test_make_union_if_needed_empty_set(self):
-        """Test make_union_if_needed with empty set returns NoneType."""
-        from generic_utils import GenericInfo
-        
-        result = GenericInfo.make_union_if_needed([])
-        assert result.origin is type(None)
-    
-    def test_make_union_if_needed_single_element(self):
-        """Test make_union_if_needed with single element returns that element."""
-        from generic_utils import GenericInfo
-        
-        single_info = GenericInfo(origin=int)
-        result = GenericInfo.make_union_if_needed([single_info])
-        assert result is single_info
-    
+
     def test_generic_info_equality_with_non_generic_info(self):
         """Test GenericInfo.__eq__ returns False for non-GenericInfo objects."""
         from generic_utils import GenericInfo
