@@ -21,18 +21,16 @@ from collections import defaultdict
 
 # Import unified generic utilities
 from generic_utils import (
-    GenericTypeUtils, get_generic_info, create_union_if_needed, get_annotation_value_pairs
+    get_generic_info, get_instance_generic_info, create_union_if_needed, get_annotation_value_pairs
 )
 
 
 class UnificationError(Exception):
     """Raised when unification fails."""
-    pass
 
 
 class TypeInferenceError(Exception):
     """Raised when type inference fails."""
-    pass
 
 
 class Variance(Enum):
@@ -97,8 +95,7 @@ class UnificationEngine:
     """Core unification engine for type inference."""
     
     def __init__(self):
-        # Use the unified generic type utils instead of custom extractors
-        self.generic_utils = GenericTypeUtils()
+        pass
     
     def unify_annotation_with_value(
         self, 
@@ -141,28 +138,10 @@ class UnificationEngine:
         # Handle Union types using generic_utils
         info = get_generic_info(annotation)
         origin = info.origin
-        args = info.concrete_args
         
         if origin is Union or (hasattr(types, 'UnionType') and origin is getattr(types, 'UnionType')):
             self._handle_union_constraints(annotation, value, constraints)
             return
-        
-        # Handle Optional (Union[T, None])
-        if origin is Union and len(args) == 2:
-            # Check if one of the args is NoneType
-            has_none = any(arg_info.origin is type(None) for arg_info in args)
-            if has_none:
-                if value is not None:
-                    # Find the non-None type
-                    non_none_type = args[0].resolved_type if args[1].origin is type(None) else args[1].resolved_type
-                    self._collect_constraints_internal(non_none_type, value, constraints)
-                else:
-                    # Value is None - we still need to handle the TypeVar
-                    non_none_type_info = args[0] if args[1].origin is type(None) else args[1]
-                    if isinstance(non_none_type_info.origin, TypeVar):
-                        # For Optional[A] with None value, we can't infer A but shouldn't fail
-                        pass
-                return
         
         # Handle generic containers
         if origin in (list, List):
@@ -381,8 +360,8 @@ class UnificationEngine:
             return
         
         # Strategy 2: Try direct generic structure matching (Generic[A, B] with Generic[int, str])
-        ann_info = self.generic_utils.get_generic_info(annotation)
-        val_info = self.generic_utils.get_instance_generic_info(value)
+        ann_info = get_generic_info(annotation)
+        val_info = get_instance_generic_info(value)
         
         if ann_info.is_generic and val_info.is_generic:
             if self._origins_are_compatible(ann_info.origin, val_info.origin):
@@ -426,8 +405,8 @@ class UnificationEngine:
     def _try_direct_generic_structure_matching(self, annotation: Any, value: Any, constraints: List[Constraint]) -> bool:
         """Try to match generic structures directly (e.g., Generic[A, B] with Generic[int, str])."""
         
-        ann_info = self.generic_utils.get_generic_info(annotation)
-        val_info = self.generic_utils.get_instance_generic_info(value)
+        ann_info = get_generic_info(annotation)
+        val_info = get_instance_generic_info(value)
         
         # Both must be generic with compatible origins and matching argument counts
         if not (ann_info.is_generic and val_info.is_generic):
@@ -506,7 +485,7 @@ class UnificationEngine:
             # Let's extract the types from the Box[int] elements
             element_types = set()
             for element in concrete_value:
-                element_info = self.generic_utils.get_instance_generic_info(element)
+                element_info = get_instance_generic_info(element)
                 if element_info.is_generic and element_info.concrete_args:
                     # Extract the deepest concrete args (e.g., int from Box[int])
                     deepest_args = self._extract_deepest_type_args(element_info)
@@ -521,7 +500,7 @@ class UnificationEngine:
                 return
         
         # For generic objects (dataclasses, Pydantic models, etc.), try to extract from their structure
-        value_info = self.generic_utils.get_instance_generic_info(concrete_value)
+        value_info = get_instance_generic_info(concrete_value)
         if value_info.is_generic and value_info.concrete_args:
             deepest_args = self._extract_deepest_type_args(value_info)
             if deepest_args:
@@ -563,8 +542,8 @@ class UnificationEngine:
         which handles __orig_class__, __pydantic_generic_metadata__, and other type metadata.
         """
         # Extract type information using generic_utils (handles all type metadata internally)
-        ann_info = self.generic_utils.get_generic_info(annotation)
-        val_info = self.generic_utils.get_instance_generic_info(value)
+        ann_info = get_generic_info(annotation)
+        val_info = get_instance_generic_info(value)
         
         # If value has generic type information, try to align structures
         if val_info.is_generic and ann_info.concrete_args and val_info.concrete_args:
@@ -582,8 +561,8 @@ class UnificationEngine:
         
         Uses generic_utils for all type metadata extraction instead of manual checks.
         """
-        ann_info = self.generic_utils.get_generic_info(ann_type)
-        val_info = self.generic_utils.get_generic_info(val_type)
+        ann_info = get_generic_info(ann_type)
+        val_info = get_generic_info(val_type)
         
         # Case 1: Unparameterized generic annotation with parameterized value type
         # (e.g., Box vs Box[int] - extract TypeVars from annotation and match with value's concrete args)
@@ -621,7 +600,7 @@ class UnificationEngine:
         
         # Handle dataclasses
         if is_dataclass(value):
-            ann_info = self.generic_utils.get_generic_info(annotation)
+            ann_info = get_generic_info(annotation)
             if ann_info.type_params:
                 # Try to infer TypeVar bindings from field values
                 field_values = []
@@ -639,7 +618,7 @@ class UnificationEngine:
         
         # Handle other generic instances by trying to extract from __dict__
         elif hasattr(value, '__dict__'):
-            ann_info = self.generic_utils.get_generic_info(annotation)
+            ann_info = get_generic_info(annotation)
             if ann_info.type_params and len(ann_info.type_params) == 1:
                 # Extract types from instance attributes
                 attr_types = {type(v) for v in value.__dict__.values() if v is not None}
