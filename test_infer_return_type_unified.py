@@ -28,6 +28,139 @@ X = TypeVar('X')
 Y = TypeVar('Y')
 
 # =============================================================================
+# SHARED TEST FIXTURES - Commonly used generic classes
+# =============================================================================
+# These fixtures are used throughout the test suite to avoid duplication.
+# They cover common patterns: simple containers, nested structures,
+# multi-parameter generics, and recursive structures.
+
+# --- Simple Single-Parameter Containers ---
+
+@dataclass
+class Wrap(typing.Generic[A]):
+    """Simple wrapper for a single value. Most common test fixture."""
+    value: A
+
+
+@dataclass
+class Box(typing.Generic[A]):
+    """Alternative simple container (semantically same as Wrap)."""
+    item: A
+
+
+class BoxModel(BaseModel, typing.Generic[A]):
+    """Pydantic version of Box."""
+    item: A
+
+
+@dataclass
+class Container(typing.Generic[A]):
+    """Generic container for test data."""
+    data: A
+
+
+# --- Multi-Parameter Containers ---
+
+@dataclass
+class TwoParamContainer(typing.Generic[A, B]):
+    """Container with two type parameters."""
+    first: A
+    second: B
+
+
+@dataclass
+class MultiParamContainer(typing.Generic[A, B, C]):
+    """Container with three type parameters for complex scenarios."""
+    primary: List[A]
+    secondary: Dict[str, B]
+    tertiary: Set[C]
+    mixed: List[Tuple[A, B, C]]
+
+
+# --- Nested Generic Structures (3 levels) ---
+
+@dataclass
+class Level1(typing.Generic[A]):
+    """First level of nested generic structure."""
+    inner: A
+
+
+@dataclass
+class Level2(typing.Generic[A]):
+    """Second level containing Level1."""
+    wrapped: Level1[A]
+    alternatives: List[A]
+
+
+class Level3(BaseModel, typing.Generic[A]):
+    """Third level (Pydantic) containing Level2."""
+    nested: Level2[A]
+    extras: Dict[str, A]
+
+
+# --- Recursive Structures ---
+
+@dataclass
+class TreeNode(typing.Generic[A]):
+    """Recursive tree structure for testing."""
+    value: A
+    children: List['TreeNode[A]']
+
+
+@dataclass
+class LinkedNode(typing.Generic[A]):
+    """Recursive linked list structure."""
+    value: A
+    next: Optional['LinkedNode[A]']
+
+
+# --- Inheritance Test Fixtures ---
+
+@dataclass
+class BaseGeneric(typing.Generic[A]):
+    """Base generic class for inheritance tests."""
+    base_value: A
+
+
+@dataclass
+class DerivedGeneric(BaseGeneric[A], typing.Generic[A]):
+    """Simple derived class maintaining same type parameter."""
+    derived_value: int
+
+
+@dataclass
+class PartiallySpecialized(typing.Generic[A]):
+    """Generic with both fixed and parameterized fields."""
+    strings: List[str]  # Fixed type
+    generic_items: List[A]  # Parameterized
+
+
+# --- JSON-like Structures ---
+
+@dataclass
+class JsonValue(typing.Generic[A]):
+    """JSON-like nested structure for real-world patterns."""
+    data: Union[A, Dict[str, 'JsonValue[A]'], List['JsonValue[A]']]
+
+
+# --- DataFrame-like Structures ---
+
+@dataclass
+class TypedColumn(typing.Generic[A]):
+    """Represents a typed column in a table."""
+    name: str
+    values: List[A]
+
+
+@dataclass
+class MultiColumnData(typing.Generic[A, B, C]):
+    """Multi-column data structure (DataFrame-like)."""
+    col1: TypedColumn[A]
+    col2: TypedColumn[B]
+    col3: TypedColumn[C]
+
+
+# =============================================================================
 # 1. BASIC SINGLE TYPEVAR TESTS (6 tests)
 # =============================================================================
 
@@ -71,20 +204,13 @@ def test_optional_and_union():
 
 def test_basic_generic_classes():
     """Test basic generic dataclass and Pydantic model inference"""
-    
-    @dataclass
-    class Wrap(typing.Generic[A]):
-        value: A
-    
+
     def unwrap(w: Wrap[A]) -> A: ...
-    t = infer_return_type(unwrap, Wrap[int](1))
+    t = infer_return_type(unwrap, Wrap[int](value=1))
     assert t is int
-    
-    class Box(BaseModel, typing.Generic[A]):
-        item: A
-    
-    def unbox(bs: List[Box[A]]) -> List[A]: ...
-    t = infer_return_type(unbox, [Box[int](item=1)])
+
+    def unbox(bs: List[BoxModel[A]]) -> List[A]: ...
+    t = infer_return_type(unbox, [BoxModel[int](item=1)])
     assert typing.get_origin(t) is list and typing.get_args(t) == (int,)
 
 
@@ -231,20 +357,7 @@ def test_multi_typevar_error_scenarios():
 
 def test_consolidated_nested_generics():
     """Consolidated test for deeply nested generic structures"""
-    
-    @dataclass
-    class Level1(typing.Generic[A]):
-        inner: A
-    
-    @dataclass
-    class Level2(typing.Generic[A]):
-        wrapped: Level1[A]
-        alternatives: List[A]
-    
-    class Level3(BaseModel, typing.Generic[A]):
-        nested: Level2[A]
-        extras: Dict[str, A]
-    
+
     def unwrap_all_levels(l3: Level3[A]) -> A: ...
     def get_alternatives(l3: Level3[A]) -> List[A]: ...
     def get_extras_values(l3: Level3[A]) -> List[A]: ...
@@ -270,14 +383,7 @@ def test_consolidated_nested_generics():
 
 def test_consolidated_multi_param_container():
     """Consolidated test for multi-parameter generic containers"""
-    
-    @dataclass
-    class MultiParamContainer(typing.Generic[A, B, C]):
-        primary: List[A]
-        secondary: Dict[str, B] 
-        tertiary: Set[C]
-        mixed: List[Tuple[A, B, C]]
-    
+
     def get_primary(mc: MultiParamContainer[A, B, C]) -> List[A]: ...
     def get_secondary_values(mc: MultiParamContainer[A, B, C]) -> List[B]: ...
     def get_tertiary(mc: MultiParamContainer[A, B, C]) -> Set[C]: ...
@@ -304,12 +410,7 @@ def test_consolidated_multi_param_container():
 
 def test_real_world_patterns():
     """Test real-world complex patterns like JSON and DataFrame structures"""
-    
-    # JSON-like nested structure
-    @dataclass
-    class JsonValue(typing.Generic[A]):
-        data: Union[A, Dict[str, 'JsonValue[A]'], List['JsonValue[A]']]
-    
+
     def extract_json_type(json_val: JsonValue[A]) -> A: ...
     
     nested_json = JsonValue[int](
@@ -325,17 +426,6 @@ def test_real_world_patterns():
     assert t is int
     
     # DataFrame-like multi-column structure
-    @dataclass
-    class TypedColumn(typing.Generic[A]):
-        name: str
-        values: List[A]
-    
-    @dataclass  
-    class MultiColumnData(typing.Generic[A, B, C]):
-        col1: TypedColumn[A]
-        col2: TypedColumn[B] 
-        col3: TypedColumn[C]
-    
     def get_first_column_type(data: MultiColumnData[A, B, C]) -> List[A]: ...
     def get_all_column_types(data: MultiColumnData[A, B, C]) -> Tuple[List[A], List[B], List[C]]: ...
     
@@ -404,10 +494,6 @@ def test_complex_union_scenarios():
     assert typing.get_args(tuple_types[0]) == (str, int)
     
     # Test union with generics
-    @dataclass
-    class Wrap(typing.Generic[A]):
-        value: A
-    
     def maybe_wrap(x: A, should_wrap: bool) -> A | Wrap[A]: ...
     
     t = infer_return_type(maybe_wrap, 42, True)
@@ -449,11 +535,6 @@ def test_advanced_inheritance_and_specialization():
     assert typing.get_args(args[1]) == (int,)
     
     # Partially specialized generic
-    @dataclass 
-    class PartiallySpecialized(typing.Generic[A]):
-        strings: List[str]
-        generic_items: List[A]
-    
     def get_generic_items(ps: PartiallySpecialized[A]) -> List[A]: ...
     def get_strings(ps: PartiallySpecialized[A]) -> List[str]: ...
     
@@ -466,11 +547,6 @@ def test_advanced_inheritance_and_specialization():
     assert typing.get_origin(t_strings) is list and typing.get_args(t_strings) == (str,)
     
     # Recursive generic structure
-    @dataclass
-    class TreeNode(typing.Generic[A]):
-        value: A
-        children: List['TreeNode[A]']
-    
     def get_tree_value(node: TreeNode[A]) -> A: ...
     def get_tree_children(node: TreeNode[A]) -> List[TreeNode[A]]: ...
     
@@ -500,33 +576,22 @@ def test_advanced_inheritance_and_specialization():
 
 def test_nested_list_of_generics():
     """Test handling nested lists of generic types"""
-    
-    @dataclass
-    class Wrap(typing.Generic[A]):
-        value: A
-    
-    class Box(BaseModel, typing.Generic[A]):
-        item: A
-    
-    def unwrap_box_list(w: Wrap[List[Box[A]]]) -> List[A]: ...
-    
-    boxes = [Box[int](item=1), Box[int](item=2)]
-    wrapped_boxes = Wrap[List[Box[int]]](boxes)
-    
+
+    def unwrap_box_list(w: Wrap[List[BoxModel[A]]]) -> List[A]: ...
+
+    boxes = [BoxModel[int](item=1), BoxModel[int](item=2)]
+    wrapped_boxes = Wrap[List[BoxModel[int]]](value=boxes)
+
     t = infer_return_type(unwrap_box_list, wrapped_boxes)
     assert typing.get_origin(t) is list and typing.get_args(t) == (int,)
 
 
 def test_optional_nested_generics():
     """Test handling optional nested generic types"""
-    
-    @dataclass
-    class Wrap(typing.Generic[A]):
-        value: A
-        
+
     def unwrap_optional_nested(w: Optional[Wrap[A]]) -> Optional[A]: ...
-    
-    wrapped = Wrap[float](3.14)
+
+    wrapped = Wrap[float](value=3.14)
     t = infer_return_type(unwrap_optional_nested, wrapped)
     # Should handle Optional[float] or Union[float, None]
     assert t == Optional[float] or (typing.get_origin(t) is type(typing.Union[float, None]))
@@ -2222,11 +2287,6 @@ def test_forward_reference_simple():
 def test_forward_reference_with_generics():
     """Test ForwardRef with generic type parameters."""
     
-    @dataclass
-    class TreeNode(typing.Generic[A]):
-        value: A
-        children: List['TreeNode[A]']
-    
     def extract_value(node: 'TreeNode[A]') -> A: ...
     
     tree = TreeNode[str](value="root", children=[])
@@ -3499,12 +3559,7 @@ def test_mixed_containers_depth_four():
 
 def test_triple_recursive_tree():
     """Test TreeNode[TreeNode[TreeNode[A]]] - 3-level recursive structure."""
-    
-    @dataclass
-    class TreeNode(typing.Generic[A]):
-        value: A
-        children: List['TreeNode[A]']
-    
+
     def extract_from_deep_tree(
         tree: TreeNode[TreeNode[TreeNode[A]]]
     ) -> A: ...
