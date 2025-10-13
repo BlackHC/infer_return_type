@@ -122,7 +122,7 @@ class UnificationEngine:
             self._collect_constraints_internal(annotation, value, constraints)
         except UnificationError as e:
             # Convert to TypeInferenceError for consistency
-            raise TypeInferenceError(str(e))
+            raise TypeInferenceError(str(e)) from e
     
     def _collect_constraints_internal(self, annotation: Any, value: Any, constraints: List[Constraint]):
         """Internal constraint collection that can raise UnificationError."""
@@ -137,20 +137,20 @@ class UnificationEngine:
         
         # Special case: Union types (need custom logic for alternative selection)
         if is_union_type(info.origin):
-            self._handle_union_constraints(annotation, value, constraints)
+            self._handle_union_annotation(annotation, value, constraints)
             return
         
         # Try unified extraction first for standard containers and custom types
         pairs = get_annotation_value_pairs(annotation, value)
         if pairs:
-            self._collect_constraints_from_pairs(pairs, annotation, value, constraints)
+            self._collect_constraints_from_pairs(pairs, constraints)
             return
         
         # Fallback: Try direct generic structure matching for custom types
         # This handles cases like Pydantic[A, list[B]] with Pydantic[int, list[str]]
         ann_info = get_generic_info(annotation)
         val_info = get_instance_generic_info(value)
-        if self._try_match_generic_info_with_instance(ann_info, val_info, constraints):
+        if self._match_generic_structures(ann_info, val_info, constraints):
             return
         
         # Final fallback: handle non-container types or types without type parameters
@@ -167,7 +167,7 @@ class UnificationEngine:
                     # Names match - use direct structure matching with instance
                     ann_info = get_generic_info(annotation)
                     val_info = get_instance_generic_info(value)
-                    if self._try_match_generic_info_with_instance(ann_info, val_info, constraints):
+                    if self._match_generic_structures(ann_info, val_info, constraints):
                         return
                     # If structure matching didn't work, just skip (assume match by name)
                     return
@@ -177,24 +177,9 @@ class UnificationEngine:
             value_type_name = type(value).__name__
             raise UnificationError(f"Expected {origin_name}, got {value_type_name}")
     
-    def _add_covariant_constraints_for_elements(
-        self, typevar: TypeVar, values, constraints: List[Constraint]
-    ):
-        """
-        Add separate covariant constraints for each distinct type in values.
-        
-        This allows proper union formation and bound checking in the constraint solver.
-        Uses _infer_type_from_value to get full generic types, not just base types.
-        """
-        element_types = {_infer_type_from_value(item) for item in values}
-        for element_type in element_types:
-            constraints.append(Constraint(typevar, element_type, Variance.COVARIANT))
-    
     def _collect_constraints_from_pairs(
         self, 
-        pairs: List[Tuple[Any, Any]], 
-        annotation: Any,  # noqa: ARG002 - kept for API consistency
-        value: Any,  # noqa: ARG002 - kept for API consistency
+        pairs: List[Tuple[GenericInfo, Any]], 
         constraints: List[Constraint]
     ):
         """Process (GenericInfo, value) pairs into constraints.
@@ -219,44 +204,61 @@ class UnificationEngine:
         
         # Handle complex cases (non-TypeVar pairs)
         if complex_pairs:
-            # Check if we have multiple pairs with the same Union type for distribution
-            # (e.g., List[Union[A, B]] with multiple elements, List[Optional[Dict[str, A]]])
-            first_info, _ = complex_pairs[0]
-            
-            # Check if the first pair is itself a Union type
-            if is_union_type(first_info.origin):
-                # Check if all pairs have the same Union structure
-                all_same_union = all(
-                    is_union_type(gi.origin)
-                    for gi, _ in complex_pairs
-                )
-                
-                if all_same_union:
-                    # All elements are Union types - handle them
-                    union_args = first_info.concrete_args
-                    
-                    # For multiple values, try distribution first
-                    if len(complex_pairs) > 1:
-                        all_values = [val for _, val in complex_pairs]
-                        if self._try_distribute_union_types(all_values, union_args, constraints):
-                            return
-                    
-                    # Match each value to union alternatives (handles Optional[Dict[str, A]] etc.)
-                    for _, val in complex_pairs:
-                        self._match_value_to_union_alternatives(val, union_args, constraints)
-                    return
-            
-            # For non-union pairs, process each individually
-            for generic_info, val in complex_pairs:
-                # Use GenericInfo-based matching instead of resolved_type
-                # to avoid losing TypeVars due to Pydantic same-TypeVar optimization
-                val_info = get_instance_generic_info(val)
-                if self._try_match_generic_info_with_instance(generic_info, val_info, constraints):
-                    continue
-                # Fallback: recursively collect constraints
-                self._collect_constraints_internal(generic_info.resolved_type, val, constraints)
+            self._process_complex_pairs(complex_pairs, constraints)
     
-    def _try_match_generic_info_with_instance(
+    def _process_complex_pairs(self, complex_pairs: List[Tuple[GenericInfo, Any]], constraints: List[Constraint]):
+        """Process complex (non-TypeVar) annotation-value pairs."""
+        
+        # Check if we have multiple pairs with the same Union type for distribution
+        first_info, _ = complex_pairs[0]
+        
+        # Check if the first pair is itself a Union type
+        if is_union_type(first_info.origin):
+            # Check if all pairs have the same Union structure
+            all_same_union = all(
+                is_union_type(gi.origin)
+                for gi, _ in complex_pairs
+            )
+            
+            if all_same_union:
+                # All elements are Union types - handle them
+                union_args = first_info.concrete_args
+                
+                # For multiple values, try distribution first
+                if len(complex_pairs) > 1:
+                    all_values = [val for _, val in complex_pairs]
+                    if self._try_distribute_union_types(all_values, union_args, constraints):
+                        return
+                
+                # Match each value to union alternatives
+                for _, val in complex_pairs:
+                    self._match_value_to_union_alternatives(val, union_args, constraints)
+                return
+        
+        # For non-union pairs, process each individually
+        for generic_info, val in complex_pairs:
+            # Use GenericInfo-based matching instead of resolved_type
+            # to avoid losing TypeVars due to Pydantic same-TypeVar optimization
+            val_info = get_instance_generic_info(val)
+            if self._match_generic_structures(generic_info, val_info, constraints):
+                continue
+            # Fallback: recursively collect constraints
+            self._collect_constraints_internal(generic_info.resolved_type, val, constraints)
+    
+    def _add_covariant_constraints_for_elements(
+        self, typevar: TypeVar, values, constraints: List[Constraint]
+    ):
+        """
+        Add separate covariant constraints for each distinct type in values.
+        
+        This allows proper union formation and bound checking in the constraint solver.
+        Uses _infer_type_from_value to get full generic types, not just base types.
+        """
+        element_types = {_infer_type_from_value(item) for item in values}
+        for element_type in element_types:
+            constraints.append(Constraint(typevar, element_type, Variance.COVARIANT))
+    
+    def _match_generic_structures(
         self, 
         annotation_info: GenericInfo,
         value_info: GenericInfo,
@@ -279,7 +281,7 @@ class UnificationEngine:
         if not (annotation_info.is_generic and value_info.is_generic):
             return False
         
-        if annotation_info.origin != value_info.origin:
+        if not self._origins_compatible(annotation_info.origin, value_info.origin):
             return False
         
         if len(annotation_info.concrete_args) != len(value_info.concrete_args):
@@ -294,13 +296,29 @@ class UnificationEngine:
                 found_constraints = True
             # Recursive matching for nested structures
             elif ann_arg.is_generic and val_arg.is_generic:
-                if self._try_match_generic_info_with_instance(ann_arg, val_arg, constraints):
+                if self._match_generic_structures(ann_arg, val_arg, constraints):
                     found_constraints = True
         
         return found_constraints
     
-    def _handle_union_constraints(self, annotation: Any, value: Any, constraints: List[Constraint]):
-        """Handle Union type constraints by trying each alternative."""
+    def _origins_compatible(self, origin1: type, origin2: type) -> bool:
+        """Check if two origins are compatible for type matching.
+        
+        This is more flexible than simple equality, allowing for:
+        - Exact matches: list == list
+        - Generic vs base: list[int] and list (same origin)
+        """
+        if origin1 is origin2:
+            return True
+        
+        # Both are the same base type
+        if origin1 == origin2:
+            return True
+        
+        return False
+    
+    def _handle_union_annotation(self, annotation: Any, value: Any, constraints: List[Constraint]):
+        """Handle Union type annotations by trying each alternative and picking the best match."""
         args = get_generic_info(annotation).concrete_args
         
         # Try each union alternative
@@ -328,7 +346,7 @@ class UnificationEngine:
                     # Check if the alternative structure matches the value structure
                     alt_origin = get_generic_info(alternative_info.resolved_type).origin
                     value_type = type(value)
-                    if alt_origin and alt_origin == value_type:
+                    if self._origins_compatible(alt_origin, value_type):
                         # Perfect structure match - prefer this
                         score += 100
                 
@@ -342,6 +360,126 @@ class UnificationEngine:
             constraints.extend(best_constraints)
         else:
             raise UnificationError(f"Value {value} doesn't match any alternative in {annotation}")
+    
+    def _try_distribute_union_types(self, values, union_alternatives: List, constraints: List[Constraint]) -> bool:
+        """
+        Try to distribute types from values among TypeVars in a Union.
+        
+        For Set[Union[A, B]] with values {1, 'a', 2, 'b'}, distribute types so that
+        A=int and B=str (or vice versa), rather than A=int|str and B=int|str.
+        
+        Returns True if distribution was successful, False otherwise.
+        """
+        # Only works if all union alternatives are TypeVars
+        typevars = [alt.origin for alt in union_alternatives if isinstance(alt.origin, TypeVar)]
+        if len(typevars) != len(union_alternatives):
+            return False  # Some alternatives are not TypeVars
+        
+        # Collect distinct types from values
+        value_types = {type(v) for v in values}
+        
+        # Simple heuristic: if number of types equals number of TypeVars, distribute them
+        if len(value_types) == len(typevars):
+            # Sort for deterministic assignment
+            sorted_types = sorted(value_types, key=lambda t: t.__name__)
+            sorted_typevars = sorted(typevars, key=lambda tv: tv.__name__)
+            
+            # Assign one type to each TypeVar with INVARIANT variance
+            # INVARIANT ensures that each TypeVar gets exactly one type
+            for typevar, concrete_type in zip(sorted_typevars, sorted_types):
+                constraints.append(Constraint(typevar, concrete_type, Variance.INVARIANT))
+            
+            return True
+        
+        # Can't distribute evenly, fall back to default behavior
+        return False
+    
+    def _match_value_to_union_alternatives(self, value: Any, union_alternatives: List, constraints: List[Constraint]):
+        """Match a value against union alternatives and collect constraints.
+        
+        This implements context-aware TypeVar matching for Union types.
+        """
+        value_type = type(value)
+        
+        # First, check if the value exactly matches any concrete (non-TypeVar) type in the union
+        # This handles cases like Optional[A] where None should match the concrete None type
+        for alt_info in union_alternatives:
+            if not isinstance(alt_info.origin, TypeVar) and alt_info.resolved_type == value_type:
+                # Perfect match with concrete type - no constraints needed
+                return
+        
+        # Try to match value against complex generic alternatives (e.g., Dict[str, A] in Optional[Dict[str, A]])
+        # This is crucial for handling Optional[ComplexType[A]] patterns
+        for alt_info in union_alternatives:
+            if not isinstance(alt_info.origin, TypeVar):
+                # This is a structured type (like Dict[str, A]) - try to match it
+                try:
+                    temp_constraints = []
+                    self._collect_constraints_internal(alt_info.resolved_type, value, temp_constraints)
+                    # If we successfully collected constraints, use them
+                    if temp_constraints:
+                        constraints.extend(temp_constraints)
+                        return
+                except (UnificationError, TypeError):
+                    # This alternative doesn't match - try next
+                    continue
+        
+        # Get existing TypeVar bindings for context-aware matching
+        existing_bindings = self._get_existing_typevar_bindings(constraints)
+        
+        # Try to assign this value to the TypeVar that already has evidence for this type
+        matched_typevar = None
+        for alt_info in union_alternatives:
+            if isinstance(alt_info.origin, TypeVar) and alt_info.origin in existing_bindings:
+                existing_types = existing_bindings[alt_info.origin]
+                if len(existing_types) == 1 and value_type in existing_types:
+                    # Perfect match - this TypeVar already has evidence for this exact type
+                    matched_typevar = alt_info.origin
+                    break
+        
+        if matched_typevar:
+            # Add a covariant constraint since this is coming from a Set/collection
+            constraints.append(Constraint(matched_typevar, value_type, Variance.COVARIANT))
+            return
+        
+        # No perfect match - check if we can rule out some TypeVars based on conflicting evidence
+        ruled_out = set()
+        for alt_info in union_alternatives:
+            if isinstance(alt_info.origin, TypeVar) and alt_info.origin in existing_bindings:
+                existing_types = existing_bindings[alt_info.origin]
+                if len(existing_types) == 1 and value_type not in existing_types:
+                    # This TypeVar has strong evidence for a different type
+                    ruled_out.add(alt_info.origin)
+        
+        # Add constraints for remaining candidates
+        candidates = [alt_info.origin for alt_info in union_alternatives 
+                     if isinstance(alt_info.origin, TypeVar) and alt_info.origin not in ruled_out]
+        
+        if candidates:
+            # Use covariant constraints to allow union formation if needed
+            for candidate in candidates:
+                constraints.append(Constraint(candidate, value_type, Variance.COVARIANT))
+        else:
+            # Fallback: add constraints for all TypeVar alternatives with invariant variance
+            for alt_info in union_alternatives:
+                if isinstance(alt_info.origin, TypeVar):
+                    constraints.append(Constraint(alt_info.origin, value_type, Variance.INVARIANT))
+    
+    def _get_existing_typevar_bindings(self, constraints: List[Constraint], variance_filter: Variance = Variance.INVARIANT) -> Dict[TypeVar, Set[type]]:
+        """Extract existing TypeVar bindings from constraints for context-aware resolution.
+        
+        Args:
+            constraints: List of constraints to analyze
+            variance_filter: Only consider constraints with this variance (default: INVARIANT for strong evidence)
+            
+        Returns:
+            Dictionary mapping TypeVars to sets of types they're constrained to
+        """
+        bindings = defaultdict(set)
+        for constraint in constraints:
+            if constraint.variance == variance_filter:
+                bindings[constraint.typevar].add(constraint.concrete_type)
+        return dict(bindings)
     
     def _solve_constraints(self, constraints: List[Constraint]) -> Substitution:
         """Solve the constraint system to produce a substitution with global context awareness."""
@@ -362,14 +500,10 @@ class UnificationEngine:
                 substitution.bind(typevar, resolved_type)
                 resolved_in_first_pass.add(typevar)
         
-        # Second pass: resolve remaining TypeVars using context from first pass
+        # Second pass: resolve remaining TypeVars
         for typevar, typevar_constraints in constraint_groups.items():
             if typevar not in resolved_in_first_pass:
-                # Try to use context from already resolved TypeVars
-                refined_constraints = self._refine_constraints_with_context(
-                    typevar_constraints, substitution
-                )
-                resolved_type = self._resolve_typevar_constraints(typevar, refined_constraints)
+                resolved_type = self._resolve_typevar_constraints(typevar, typevar_constraints)
                 substitution.bind(typevar, resolved_type)
         
         return substitution
@@ -395,18 +529,6 @@ class UnificationEngine:
         
         # Covariant constraints can be resolved (by union formation)
         return True
-    
-    def _refine_constraints_with_context(
-        self, 
-        constraints: List[Constraint], 
-        context: Substitution  # noqa: ARG002 - reserved for future optimizations
-    ) -> List[Constraint]:
-        """Refine constraints using context from already resolved TypeVars.
-        
-        Currently a no-op, but provides an extension point for future optimizations
-        such as constraint propagation based on already-resolved TypeVars.
-        """
-        return constraints
     
     def _resolve_typevar_constraints(self, typevar: TypeVar, constraints: List[Constraint]) -> type:
         """Resolve constraints for a single TypeVar."""
@@ -438,23 +560,17 @@ class UnificationEngine:
         if len(set(concrete_types)) == 1:
             return self._check_typevar_bounds(typevar, concrete_types[0])
         
-        # Different constraints - distinguish between "forced unions" and "conflicting sources"
-        # - Forced unions: single container with mixed types (List[A] with mixed elements)
-        # - Conflicting sources: multiple separate containers claiming different types for same TypeVar
-        
-        # Check if constraints come from the same "source context" or different sources
+        # Different constraints - form union
         covariant_constraints = [c for c in constraints if c.variance == Variance.COVARIANT]
         invariant_constraints = [c for c in constraints if c.variance == Variance.INVARIANT]
         
         # If we have covariant constraints (like List[A] with mixed elements), form union
-        # Preserve type precision - only collapse to supertype if TypeVar bound requires it
         if covariant_constraints and not invariant_constraints:
             union_type = create_union_if_needed(set(concrete_types))
             return self._check_typevar_bounds(typevar, union_type)
         
         # If we have multiple invariant constraints with different types, form a union
         # This handles cases like: def identity(a: A, b: A) -> A with identity(1, 'x')
-        # Result should be int | str, not an error
         if len(invariant_constraints) > 1:
             invariant_types = [c.concrete_type for c in invariant_constraints]
             if len(set(invariant_types)) > 1:
@@ -463,59 +579,6 @@ class UnificationEngine:
         
         # Mixed variance - default to union formation
         return self._check_typevar_bounds(typevar, create_union_if_needed(set(concrete_types)))
-    
-    def _matches_any_constraint(self, inferred_type: type, constraints: tuple) -> bool:
-        """Check if inferred type matches any of the constraints.
-        
-        Handles:
-        - Exact match: int == int
-        - Origin match: list[int] matches list
-        - Union match: (list[int] | float) matches (float | list) by comparing origins
-        """
-        inferred_info = get_generic_info(inferred_type)
-        
-        # Check each constraint
-        for constraint in constraints:
-            # Exact match
-            if inferred_type == constraint:
-                return True
-            
-            # Origin match for generic types (list[int] matches list)
-            constraint_info = get_generic_info(constraint)
-            if inferred_info.origin == constraint_info.origin:
-                # If constraint is bare type (list) and inferred is specialized (list[int]), accept it
-                if not constraint_info.is_generic and inferred_info.is_generic:
-                    return True
-                # If both have same structure, check recursively (handled by exact match above)
-                elif inferred_info.is_generic and constraint_info.is_generic:
-                    # Both generic - check if they're equivalent
-                    if inferred_type == constraint:
-                        return True
-            
-            # Union constraint matching: check if inferred union components match constraint union components
-            if is_union_type(inferred_info.origin) and is_union_type(constraint_info.origin):
-                # Both are unions - check if components match by origin
-                if self._union_components_match(inferred_info, constraint_info):
-                    return True
-        
-        return False
-    
-    def _union_components_match(self, inferred_union_info, constraint_union_info) -> bool:
-        """Check if union components match by comparing origins.
-        
-        Accepts list[int] as matching list, etc.
-        """
-        inferred_components = inferred_union_info.concrete_args
-        constraint_components = constraint_union_info.concrete_args
-        
-        if len(inferred_components) != len(constraint_components):
-            return False
-        
-        # Extract origins from both sides (list[int] → list)
-        inferred_origins = {comp.origin for comp in inferred_components}
-        constraint_origins = {comp.origin for comp in constraint_components}
-        
-        return inferred_origins == constraint_origins
     
     def _check_typevar_bounds(self, typevar: TypeVar, concrete_type: type) -> type:
         """Check if concrete type satisfies TypeVar bounds and constraints.
@@ -563,126 +626,59 @@ class UnificationEngine:
                     )
         
         return concrete_type
-
-    def _get_existing_typevar_bindings(self, constraints: List[Constraint], variance_filter: Variance = Variance.INVARIANT) -> Dict[TypeVar, Set[type]]:
-        """Extract existing TypeVar bindings from constraints for context-aware resolution.
-        
-        Args:
-            constraints: List of constraints to analyze
-            variance_filter: Only consider constraints with this variance (default: INVARIANT for strong evidence)
-            
-        Returns:
-            Dictionary mapping TypeVars to sets of types they're constrained to
-        """
-        bindings = defaultdict(set)
-        for constraint in constraints:
-            if constraint.variance == variance_filter:
-                bindings[constraint.typevar].add(constraint.concrete_type)
-        return dict(bindings)
     
-    def _try_distribute_union_types(self, values, union_alternatives: List, constraints: List[Constraint]) -> bool:
+    def _matches_any_constraint(self, inferred_type: type, constraints: tuple) -> bool:
+        """Check if inferred type matches any of the constraints.
+        
+        Handles:
+        - Exact match: int == int
+        - Origin match: list[int] matches list
+        - Union match: (list[int] | float) matches (float | list) by comparing origins
         """
-        Try to distribute types from values among TypeVars in a Union.
+        inferred_info = get_generic_info(inferred_type)
         
-        For Set[Union[A, B]] with values {1, 'a', 2, 'b'}, distribute types so that
-        A=int and B=str (or vice versa), rather than A=int|str and B=int|str.
-        
-        Args:
-            values: Iterable of values (set, list, etc.)
+        # Check each constraint
+        for constraint in constraints:
+            # Exact match
+            if inferred_type == constraint:
+                return True
             
-        Returns True if distribution was successful, False otherwise.
-        """
-        # Only works if all union alternatives are TypeVars
-        typevars = [alt.origin for alt in union_alternatives if isinstance(alt.origin, TypeVar)]
-        if len(typevars) != len(union_alternatives):
-            return False  # Some alternatives are not TypeVars
-        
-        # Collect distinct types from values
-        value_types = {type(v) for v in values}
-        
-        # Simple heuristic: if number of types equals number of TypeVars, distribute them
-        if len(value_types) == len(typevars):
-            # Sort for deterministic assignment
-            sorted_types = sorted(value_types, key=lambda t: t.__name__)
-            sorted_typevars = sorted(typevars, key=lambda tv: tv.__name__)
+            # Origin match for generic types (list[int] matches list)
+            constraint_info = get_generic_info(constraint)
+            if self._origins_compatible(inferred_info.origin, constraint_info.origin):
+                # If constraint is bare type (list) and inferred is specialized (list[int]), accept it
+                if not constraint_info.is_generic and inferred_info.is_generic:
+                    return True
+                # If both have same structure, check recursively (handled by exact match above)
+                elif inferred_info.is_generic and constraint_info.is_generic:
+                    # Both generic - check if they're equivalent
+                    if inferred_type == constraint:
+                        return True
             
-            # Assign one type to each TypeVar with INVARIANT variance
-            # INVARIANT ensures that each TypeVar gets exactly one type
-            for typevar, concrete_type in zip(sorted_typevars, sorted_types):
-                constraints.append(Constraint(typevar, concrete_type, Variance.INVARIANT))
-            
-            return True
+            # Union constraint matching: check if inferred union components match constraint union components
+            if is_union_type(inferred_info.origin) and is_union_type(constraint_info.origin):
+                # Both are unions - check if components match by origin
+                if self._union_components_match(inferred_info, constraint_info):
+                    return True
         
-        # Can't distribute evenly, fall back to default behavior
         return False
     
-    def _match_value_to_union_alternatives(self, value: Any, union_alternatives: List, constraints: List[Constraint]):
-        """Match a value against union alternatives and collect constraints."""
-        value_type = type(value)
+    def _union_components_match(self, inferred_union_info, constraint_union_info) -> bool:
+        """Check if union components match by comparing origins.
         
-        # First, check if the value exactly matches any concrete (non-TypeVar) type in the union
-        # This handles cases like Optional[A] where None should match the concrete None type
-        for alt_info in union_alternatives:
-            if not isinstance(alt_info.origin, TypeVar) and alt_info.resolved_type == value_type:
-                # Perfect match with concrete type - no constraints needed
-                return
+        Accepts list[int] as matching list, etc.
+        """
+        inferred_components = inferred_union_info.concrete_args
+        constraint_components = constraint_union_info.concrete_args
         
-        # Try to match value against complex generic alternatives (e.g., Dict[str, A] in Optional[Dict[str, A]])
-        # This is crucial for handling Optional[ComplexType[A]] patterns
-        for alt_info in union_alternatives:
-            if not isinstance(alt_info.origin, TypeVar):
-                # This is a structured type (like Dict[str, A]) - try to match it
-                try:
-                    temp_constraints = []
-                    self._collect_constraints_internal(alt_info.resolved_type, value, temp_constraints)
-                    # If we successfully collected constraints, use them
-                    if temp_constraints:
-                        constraints.extend(temp_constraints)
-                        return
-                except (UnificationError, TypeError):
-                    # This alternative doesn't match - try next
-                    continue
+        if len(inferred_components) != len(constraint_components):
+            return False
         
-        # Get existing TypeVar bindings for context-aware matching
-        existing_bindings = self._get_existing_typevar_bindings(constraints, Variance.INVARIANT)
+        # Extract origins from both sides (list[int] → list)
+        inferred_origins = {comp.origin for comp in inferred_components}
+        constraint_origins = {comp.origin for comp in constraint_components}
         
-        # Try to assign this value to the TypeVar that already has evidence for this type
-        matched_typevar = None
-        for alt_info in union_alternatives:
-            if isinstance(alt_info.origin, TypeVar) and alt_info.origin in existing_bindings:
-                existing_types = existing_bindings[alt_info.origin]
-                if len(existing_types) == 1 and value_type in existing_types:
-                    # Perfect match - this TypeVar already has evidence for this exact type
-                    matched_typevar = alt_info.origin
-                    break
-        
-        if matched_typevar:
-            # Add a covariant constraint since this is coming from a Set/collection
-            constraints.append(Constraint(matched_typevar, value_type, Variance.COVARIANT))
-            return
-        
-        # No perfect match - check if we can rule out some TypeVars based on conflicting evidence
-        ruled_out = set()
-        for alt_info in union_alternatives:
-            if isinstance(alt_info.origin, TypeVar) and alt_info.origin in existing_bindings:
-                existing_types = existing_bindings[alt_info.origin]
-                if len(existing_types) == 1 and value_type not in existing_types:
-                    # This TypeVar has strong evidence for a different type
-                    ruled_out.add(alt_info.origin)
-        
-        # Add constraints for remaining candidates
-        candidates = [alt_info.origin for alt_info in union_alternatives 
-                     if isinstance(alt_info.origin, TypeVar) and alt_info.origin not in ruled_out]
-        
-        if candidates:
-            # Use covariant constraints to allow union formation if needed
-            for candidate in candidates:
-                constraints.append(Constraint(candidate, value_type, Variance.COVARIANT))
-        else:
-            # Fallback: add constraints for all TypeVar alternatives with invariant variance
-            for alt_info in union_alternatives:
-                if isinstance(alt_info.origin, TypeVar):
-                    constraints.append(Constraint(alt_info.origin, value_type, Variance.INVARIANT))
+        return inferred_origins == constraint_origins
 
 
 def _is_subtype(subtype: type, supertype: type) -> bool:
@@ -853,7 +849,7 @@ def infer_return_type_unified(
     try:
         substitution = engine._solve_constraints(all_constraints)
     except UnificationError as e:
-        raise TypeInferenceError(str(e))
+        raise TypeInferenceError(str(e)) from e
     
     # Apply substitution to return annotation
     result = substitution.apply(return_annotation)
@@ -884,4 +880,4 @@ def _has_unbound_typevars(annotation: Any) -> bool:
                 return True
         return False
     
-    return False 
+    return False

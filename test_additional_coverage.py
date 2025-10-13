@@ -434,7 +434,7 @@ def test_generic_info_matching_different_origins():
     set_info = get_instance_generic_info(set_val)
     
     constraints = []
-    result = engine._try_match_generic_info_with_instance(list_info, set_info, constraints)
+    result = engine._match_generic_structures(list_info, set_info, constraints)
     
     # Should return False because list != set
     assert result == False
@@ -454,7 +454,7 @@ def test_generic_info_matching_different_arg_counts():
     
     constraints = []
     # This should return False due to arg count mismatch
-    result = engine._try_match_generic_info_with_instance(list_info, dict_info, constraints)
+    result = engine._match_generic_structures(list_info, dict_info, constraints)
     
     assert result == False
 
@@ -475,14 +475,461 @@ def test_generic_info_recursive_matching():
     val_info = get_instance_generic_info(nested_value)
     
     constraints = []
-    result = engine._try_match_generic_info_with_instance(ann_info, val_info, constraints)
+    result = engine._match_generic_structures(ann_info, val_info, constraints)
     
     # Should successfully match and extract constraints
     # (May or may not return True depending on implementation details)
 
 
 # =============================================================================
-# 11. UNION COMPONENT MATCHING (Lines 504-519)
+# 11. SUBCLASS COMPATIBILITY TESTS
+# =============================================================================
+# These tests document behavior when annotation expects a base class
+# but receives a subclass instance. Per Liskov Substitution Principle,
+# this should work, but current implementation may handle it differently.
+
+def test_simple_subclass_generic_inheritance():
+    """Test that subclass instances work where base class is expected.
+    
+    Expected: Should work via field-based extraction.
+    Current: Works via field extraction, bypasses origin check.
+    """
+    
+    @dataclass
+    class Container(typing.Generic[A]):
+        value: A
+    
+    @dataclass
+    class SpecialContainer(Container[A], typing.Generic[A]):
+        extra: str
+    
+    # Function expects Container[A] but we pass SpecialContainer[int]
+    def process_container(c: Container[A]) -> A: ...
+    
+    special = SpecialContainer[int](value=42, extra="test")
+    
+    # This works because field-based extraction finds 'value: A' -> 'value: 42'
+    result = infer_return_type(process_container, special)
+    assert result == int
+
+
+def test_deep_inheritance_chain():
+    """Test deep inheritance chain: GrandChild -> Child -> Parent.
+    
+    Expected: Should work through any level of inheritance.
+    Current: Works via field extraction.
+    """
+    
+    @dataclass
+    class GrandParent(typing.Generic[A]):
+        gp_value: A
+    
+    @dataclass
+    class Parent(GrandParent[A], typing.Generic[A]):
+        p_value: str
+    
+    @dataclass
+    class Child(Parent[A], typing.Generic[A]):
+        c_value: int
+    
+    def process_gp(obj: GrandParent[A]) -> A: ...
+    def process_p(obj: Parent[A]) -> A: ...
+    
+    child = Child[float](gp_value=3.14, p_value="test", c_value=42)
+    
+    # Should work at any level
+    result_gp = infer_return_type(process_gp, child)
+    assert result_gp == float
+    
+    result_p = infer_return_type(process_p, child)
+    assert result_p == float
+
+
+def test_partial_specialization_subclass():
+    """Test subclass that partially specializes parent's type parameters.
+    
+    Expected: Should work, extracting only the remaining type parameters.
+    Current: Works via field extraction.
+    """
+    
+    @dataclass
+    class TwoParam(typing.Generic[A, B]):
+        first: A
+        second: B
+    
+    @dataclass
+    class OneParam(TwoParam[A, str], typing.Generic[A]):  # Fix B=str
+        extra: int
+    
+    def process_two(obj: TwoParam[A, B]) -> Tuple[A, B]: ...
+    
+    one = OneParam[int](first=42, second="fixed", extra=99)
+    
+    # Should infer A=int, B=str
+    result = infer_return_type(process_two, one)
+    assert typing.get_origin(result) == tuple
+    assert typing.get_args(result) == (int, str)
+
+
+def test_concrete_subclass_of_generic():
+    """Test non-generic subclass of generic base.
+    
+    Expected: Should work, base's type parameters are concrete.
+    Current: Works via field extraction.
+    """
+    
+    @dataclass
+    class GenericBase(typing.Generic[A]):
+        value: A
+    
+    @dataclass
+    class ConcreteChild(GenericBase[int]):  # Fully specialized
+        extra: str
+    
+    def process_generic(obj: GenericBase[A]) -> A: ...
+    
+    concrete = ConcreteChild(value=42, extra="test")
+    
+    # Should infer A=int from the specialized base
+    result = infer_return_type(process_generic, concrete)
+    assert result == int
+
+
+def test_multiple_inheritance_generics():
+    """Test class with multiple generic parents using different TypeVar names.
+    
+    Expected: Should follow MRO and extract from all parents.
+    Current: Works correctly when parents use different TypeVar names.
+    """
+    
+    @dataclass
+    class HasA(typing.Generic[A]):
+        a_value: A
+    
+    @dataclass
+    class HasB(typing.Generic[B]):  # Different TypeVar name
+        b_value: B
+    
+    @dataclass
+    class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
+        both: str
+    
+    def extract_a(obj: HasA[A]) -> A: ...
+    def extract_b(obj: HasB[B]) -> B: ...
+    
+    both = HasBoth[int, str](a_value=42, b_value="hello", both="test")
+    
+    # Should work for both parent types
+    result_a = infer_return_type(extract_a, both)
+    assert result_a == int
+    
+    result_b = infer_return_type(extract_b, both)
+    assert result_b == str
+
+
+def test_multiple_inheritance_typevar_shadowing():
+    """Test multiple inheritance when parents use the SAME TypeVar name.
+    
+    FULLY FIXED! Both cases now work correctly through proper TypeVar substitution.
+    
+    The fix:
+    1. Only extract fields from the annotation class (not inherited fields)
+    2. Substitute TypeVars when annotation re-parameterizes the class
+       Example: HasB defined as Generic[A], annotation is HasB[B] → substitute A with B
+    3. Return substituted TypeVars to the inference engine
+    
+    This properly handles the case where:
+    - HasA and HasB both use Generic[A] (same TypeVar name)
+    - HasBoth uses them with different TypeVars: HasA[A], HasB[B]
+    - The substitution ensures we track the right TypeVar for each parent
+    """
+    
+    @dataclass
+    class HasA(typing.Generic[A]):
+        a_value: A
+    
+    @dataclass
+    class HasB(typing.Generic[A]):  # SAME TypeVar name as HasA!
+        b_value: A
+    
+    @dataclass
+    class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
+        both: str
+    
+    def extract_a(obj: HasA[A]) -> A: ...
+    def extract_b(obj: HasB[B]) -> B: ...
+    
+    both = HasBoth[int, str](a_value=42, b_value="hello", both="test")
+    
+    # Both work correctly now!
+    result_a = infer_return_type(extract_a, both)
+    assert result_a == int
+    
+    result_b = infer_return_type(extract_b, both)
+    assert result_b == str
+    
+    
+def test_swapped_generic_typevars():
+    """Test that TypeVar swapping in inheritance is handled correctly.
+    
+    HasB(HasA[B, A], Generic[B, A]) swaps the type parameters.
+    So HasB[int, str] means B=int, A=str, which gives:
+    - a_value has type B = int
+    - b_value has type A = str
+    
+    The function returns Tuple[A, B] = Tuple[str, int].
+    """
+    @dataclass
+    class HasA(typing.Generic[A, B]):
+        a_value: A
+        b_value: B
+    
+    @dataclass
+    class HasB(HasA[B, A], typing.Generic[A, B]):  # Swapped order
+        pass
+    
+    def process_a(obj: HasB[C, D]) -> Tuple[C, D]: ...
+    
+    result = infer_return_type(process_a, HasB[int, str](a_value="hello", b_value=42))
+    # HasB[int, str] means B=int, A=str
+    # So Tuple[A, B] = Tuple[str, int]
+    assert typing.get_origin(result) is tuple
+    assert typing.get_args(result) == (int, str)
+    
+
+def test_swapped_generic_typevars_pydantic():
+    """Test TypeVar swapping with Pydantic models.
+    
+    Similar to dataclass version but uses Pydantic BaseModel.
+    Pydantic specializes field annotations automatically.
+    """
+    
+    C = TypeVar('C')
+    D = TypeVar('D')
+    
+    class ParentPyd(BaseModel, typing.Generic[A, B]):
+        a_value: A
+        b_value: B
+    
+    class ChildPyd(ParentPyd[B, A], typing.Generic[A, B]):
+        # Swapped: Parent gets [B, A] but Child is [A, B]
+        pass
+    
+    def process_pyd(obj: ChildPyd[C, D]) -> Tuple[C, D]: ...
+    
+    result = infer_return_type(process_pyd, ChildPyd[int, str](a_value="hello", b_value=42))
+    
+    # Pydantic specializes field annotations, so the behavior matches dataclass
+    assert typing.get_origin(result) is tuple
+    assert typing.get_args(result) == (int, str)
+
+
+def test_builtin_type_subclass():
+    """Test subclass of built-in generic types.
+    
+    Expected: Should work with custom list/dict/set subclasses.
+    Current: Works! Built-in extractors check isinstance(), not exact type.
+    """
+    
+    class MyList(list):
+        """Custom list subclass."""
+        pass
+    
+    def process_list(items: List[A]) -> A: ...
+    
+    my_list = MyList([1, 2, 3])
+    
+    # This works! Built-in extractors use isinstance(value, list)
+    # So MyList (subclass of list) is handled correctly
+    result = infer_return_type(process_list, my_list)
+    assert result == int
+
+
+def test_subclass_with_additional_type_params():
+    """Test subclass that adds new type parameters.
+    
+    Expected: Should handle the base's params, ignore extras.
+    Current: Tests actual behavior.
+    """
+    
+    @dataclass
+    class Base(typing.Generic[A]):
+        base_val: A
+    
+    @dataclass
+    class Extended(Base[A], typing.Generic[A, B]):  # Adds B
+        extended_val: B
+    
+    def process_base(obj: Base[A]) -> A: ...
+    
+    extended = Extended[int, str](base_val=42, extended_val="extra")
+    
+    # Should infer A=int, ignore B
+    result = infer_return_type(process_base, extended)
+    assert result == int
+
+
+def test_origins_compatible_with_subclass():
+    """Test _origins_compatible method with subclass relationship.
+    
+    This documents current behavior: it returns False for subclasses.
+    Per LSP, it arguably should return True, but current implementation
+    works via field extraction so it's not critical.
+    """
+    from generic_utils import get_generic_info, get_instance_generic_info
+    
+    @dataclass
+    class Base(typing.Generic[A]):
+        value: A
+    
+    @dataclass
+    class Derived(Base[A], typing.Generic[A]):
+        extra: str
+    
+    engine = UnificationEngine()
+    
+    base_info = get_generic_info(Base[A])
+    derived_instance = Derived[int](value=42, extra="test")
+    derived_info = get_instance_generic_info(derived_instance)
+    
+    # Current implementation: returns False
+    compatible = engine._origins_compatible(base_info.origin, derived_info.origin)
+    
+    # Document current behavior
+    assert compatible == False, "Current: doesn't check subclass relationships"
+    
+    # Verify it IS actually a subclass
+    assert issubclass(derived_info.origin, base_info.origin)
+
+
+def test_diamond_inheritance():
+    """Test diamond inheritance pattern with generics.
+    
+    Expected: Should follow MRO correctly.
+    Current: Tests actual behavior.
+    """
+    
+    @dataclass
+    class Top(typing.Generic[A]):
+        top: A
+    
+    @dataclass
+    class Left(Top[A], typing.Generic[A]):
+        left: str
+    
+    @dataclass
+    class Right(Top[A], typing.Generic[A]):
+        right: int
+    
+    @dataclass
+    class Bottom(Left[A], Right[A], typing.Generic[A]):
+        bottom: float
+    
+    def process_top(obj: Top[A]) -> A: ...
+    
+    bottom = Bottom[bool](top=True, left="l", right=1, bottom=2.0)
+    
+    # Should follow MRO and extract A=bool
+    result = infer_return_type(process_top, bottom)
+    assert result == bool
+
+
+def test_covariant_subclass_list():
+    """Test that List[Derived] works where List[Base] expected.
+    
+    Expected: Should work because List is covariant in reading.
+    Current: Tests actual behavior for lists.
+    """
+    
+    class Animal: pass
+    class Dog(Animal): pass
+    
+    def process_animals(animals: List[A]) -> A: ...
+    
+    dogs = [Dog(), Dog()]
+    
+    # Should infer A=Dog (most specific type)
+    result = infer_return_type(process_animals, dogs)
+    assert result == Dog
+
+
+def test_invariant_subclass_dict_keys():
+    """Test Dict[Derived, V] where Dict[Base, V] expected.
+    
+    Expected: Dict keys are invariant, so this is tricky.
+    Current: Tests actual behavior.
+    """
+    
+    class Key: pass
+    class SpecialKey(Key): pass
+    
+    def process_dict(d: Dict[A, B]) -> Tuple[A, B]: ...
+    
+    special_dict = {SpecialKey(): "value"}
+    
+    # Should infer from actual key type
+    result = infer_return_type(process_dict, special_dict)
+    assert typing.get_origin(result) == tuple
+    key_type, val_type = typing.get_args(result)
+    assert key_type == SpecialKey
+    assert val_type == str
+
+
+def test_subclass_without_orig_class():
+    """Test subclass instance without __orig_class__ attribute.
+    
+    Expected: Should fall back to field-based inference.
+    Current: Tests fallback behavior.
+    """
+    
+    @dataclass
+    class Base(typing.Generic[A]):
+        value: A
+    
+    @dataclass
+    class Derived(Base[A], typing.Generic[A]):
+        extra: str
+    
+    def process(obj: Base[A]) -> A: ...
+    
+    # Create instance without __orig_class__
+    derived = Derived(value=42, extra="test")
+    if hasattr(derived, '__orig_class__'):
+        delattr(derived, '__orig_class__')
+    
+    # Should still work via field extraction
+    result = infer_return_type(process, derived)
+    assert result == int
+
+
+def test_subclass_type_mismatch_detection():
+    """Test that incompatible subclass relationships are detected.
+    
+    Expected: Should fail when types don't align.
+    Current: Correctly detects and raises error!
+    """
+    
+    @dataclass
+    class Container(typing.Generic[A]):
+        value: A
+    
+    @dataclass
+    class IntContainer(Container[int]):  # Fixed to int
+        pass
+    
+    # Annotation expects Container[str] but instance is IntContainer(Container[int])
+    def process_string_container(c: Container[str]) -> str: ...
+    
+    int_container = IntContainer(value=42)
+    
+    # Correctly detects type mismatch: annotation says str, field value is int
+    # The engine extracts field pairs and finds: str annotation vs int value
+    with pytest.raises(TypeInferenceError, match="Expected str, got int"):
+        infer_return_type(process_string_container, int_container)
+
+
+# =============================================================================
+# 12. UNION COMPONENT MATCHING (Lines 504-519)
 # =============================================================================
 
 def test_union_components_match_by_origin():

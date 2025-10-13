@@ -463,9 +463,80 @@ class DataclassExtractor(GenericExtractor):
                     args = get_args(base)
                     return [arg for arg in args if isinstance(arg, TypeVar)]
         return []
+    
+    def _build_inheritance_aware_substitution(self, annotation_info: GenericInfo, instance: Any) -> Dict[TypeVar, GenericInfo]:
+        """Build substitution map for inherited fields with potentially swapped TypeVars.
+        
+        Handles cases like:
+            class HasA(Generic[A, B]): ...
+            class HasB(HasA[B, A], Generic[A, B]): ...  # Swapped!
+            
+        When extracting fields from HasB that are inherited from HasA, we need to map
+        HasA's TypeVars through the inheritance chain to HasB's TypeVars.
+        
+        Args:
+            annotation_info: The annotation (e.g., HasB[C, D])
+            instance: The instance (e.g., HasB[int, str] instance)
+            
+        Returns:
+            Dict mapping field TypeVars (from parent classes) to annotation TypeVars
+        """
+        # Start with simple substitution for the annotation
+        typevar_map = self._build_typevar_substitution_map(annotation_info)
+        
+        instance_class = instance.__orig_class__
+        annotation_class = annotation_info.origin
+        instance_origin = get_origin(instance_class) or instance_class
+        
+        # Walk through all parent dataclasses to build substitution maps
+        if not hasattr(instance_origin, '__orig_bases__'):
+            return typevar_map
+        
+        # For each parent class, map its TypeVars to the annotation's TypeVars
+        for base in instance_origin.__orig_bases__:
+            base_origin = get_origin(base) or base
+            if base_origin == annotation_class or not is_dataclass(base_origin):
+                continue  # Skip self and non-dataclasses
+            
+            # Found a parent dataclass! e.g., base = HasA[B, A] where B, A are from HasB
+            base_args = get_args(base)  # [B, A] (TypeVars from instance class)
+            instance_params = getattr(instance_origin, '__parameters__', ())  # (A, B) from HasB
+            
+            # Get the parent class's original TypeVars
+            parent_class_params = self._get_original_type_parameters(base_origin)  # [A, B] from HasA
+            
+            # Map each parent TypeVar to the annotation's TypeVar
+            # parent_class_params[i] (HasA's TypeVar) appears as base_args[i] (HasB's TypeVar reference)
+            # We need to find where base_args[i] appears in instance_params and use annotation_info.concrete_args
+            
+            for i, parent_tv in enumerate(parent_class_params):
+                if i < len(base_args):
+                    base_arg = base_args[i]  # This is a TypeVar from instance class (e.g., B from HasB)
+                    
+                    if isinstance(base_arg, TypeVar):
+                        # Find where this TypeVar appears in the instance's parameters
+                        try:
+                            param_idx = list(instance_params).index(base_arg)
+                            # Map parent TypeVar to annotation's corresponding TypeVar
+                            if param_idx < len(annotation_info.concrete_args):
+                                typevar_map[parent_tv] = annotation_info.concrete_args[param_idx]
+                        except ValueError:
+                            pass
+                    else:
+                        # base_arg is a concrete type
+                        typevar_map[parent_tv] = get_generic_info(base_arg)
+        
+        return typevar_map
 
     def get_annotation_value_pairs(self, annotation: Any, instance: Any) -> List[Tuple[GenericInfo, Any]]:
-        """Extract (GenericInfo, value) pairs from dataclass fields."""
+        """Extract (GenericInfo, value) pairs from dataclass fields.
+        
+        IMPORTANT: Only extracts fields defined in the annotation class, not inherited fields.
+        This ensures that when matching HasA[A] against a HasBoth instance, we only
+        get HasA's fields, avoiding TypeVar shadowing issues.
+        
+        Also handles inheritance with swapped TypeVars like HasB(HasA[B, A], Generic[A, B]).
+        """
         if instance is None or not is_dataclass(instance):
             return []
         
@@ -473,8 +544,28 @@ class DataclassExtractor(GenericExtractor):
         if not is_dataclass(annotation_info.origin):
             return []
         
-        # Build TypeVar substitution map if annotation is parameterized
-        typevar_map = self._build_typevar_substitution_map(annotation_info)
+        # Check if we need inheritance substitution (annotation class != instance class)
+        annotation_class = annotation_info.origin
+        instance_class_origin = get_origin(getattr(instance, '__orig_class__', type(instance))) or type(instance)
+        
+        # Build TypeVar substitution map
+        # Check if this class has parent classes with generic parameters
+        has_generic_parents = False
+        if hasattr(annotation_class, '__orig_bases__'):
+            for base in annotation_class.__orig_bases__:
+                base_origin = get_origin(base) or base
+                if base_origin != annotation_class and is_dataclass(base_origin):
+                    # Has a dataclass parent
+                    has_generic_parents = True
+                    break
+        
+        if has_generic_parents and hasattr(instance, '__orig_class__'):
+            # This class inherits from generic dataclasses - need to track inheritance substitution
+            # Example: HasB[C, D] where HasB inherits HasA[B, A] (swapped)
+            typevar_map = self._build_inheritance_aware_substitution(annotation_info, instance)
+        else:
+            # No generic parents or no __orig_class__ - simple substitution
+            typevar_map = self._build_typevar_substitution_map(annotation_info)
         
         # Get resolved field types (resolves ForwardRefs)
         # Build localns with the class itself for ForwardRef resolution in local scopes
@@ -490,14 +581,21 @@ class DataclassExtractor(GenericExtractor):
             field_hints = {}
         
         pairs = []
-        for dataclass_field in fields(instance):
+        # CRITICAL FIX: Iterate over annotation class's fields only, not instance's fields
+        # This prevents extracting inherited fields that might use shadowed TypeVar names
+        for dataclass_field in fields(annotation_info.origin):
+            # Check if the instance actually has this field (it should, due to inheritance)
+            if not hasattr(instance, dataclass_field.name):
+                continue
+                
             field_value = getattr(instance, dataclass_field.name)
             
             # Use resolved field type if available, otherwise use raw type
             field_type = field_hints.get(dataclass_field.name, dataclass_field.type)
             field_generic_info = get_generic_info(field_type)
             
-            # Substitute TypeVars if we have a parameterized annotation
+            # Substitute TypeVars to handle re-parameterization
+            # Example: Field is 'A' but annotation uses 'B', map A → B
             if typevar_map:
                 field_generic_info = self._substitute_typevars_in_generic_info(field_generic_info, typevar_map)
             

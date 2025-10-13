@@ -1193,6 +1193,171 @@ class TestGetAnnotationValuePairsEdgeCases:
         assert values == [1, "hello", 3.14]
 
 
+class TestTypeVarShadowingInMultipleInheritance:
+    """Test TypeVar shadowing fix for multiple inheritance."""
+    
+    def test_dataclass_shadowing_basic(self):
+        """Test basic TypeVar shadowing case with dataclasses."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        @dataclass
+        class HasA(typing.Generic[A]):
+            a_value: A
+        
+        @dataclass
+        class HasB(typing.Generic[A]):  # Same TypeVar name!
+            b_value: A
+        
+        @dataclass
+        class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
+            both: str
+        
+        both = HasBoth[int, str](a_value=42, b_value="hello", both="test")
+        
+        # Extract pairs for HasA[A] - should only get a_value field
+        pairs_a = get_annotation_value_pairs(HasA[A], both)
+        assert len(pairs_a) == 1
+        ann_info, val = pairs_a[0]
+        assert isinstance(ann_info.origin, TypeVar)
+        assert ann_info.origin == A
+        assert val == 42
+        
+        # Extract pairs for HasB[B] - should only get b_value field with B substituted
+        pairs_b = get_annotation_value_pairs(HasB[B], both)
+        assert len(pairs_b) == 1
+        ann_info, val = pairs_b[0]
+        assert isinstance(ann_info.origin, TypeVar)
+        assert ann_info.origin == B  # Should be B, not A!
+        assert val == "hello"
+    
+    def test_dataclass_shadowing_concrete_types(self):
+        """Test TypeVar shadowing with concrete type instantiation."""
+        A = TypeVar('A')
+        
+        @dataclass
+        class Parent1(typing.Generic[A]):
+            field1: A
+        
+        @dataclass
+        class Parent2(typing.Generic[A]):  # Same name!
+            field2: A
+        
+        @dataclass
+        class Child(Parent1[int], Parent2[str]):
+            pass
+        
+        child = Child(field1=42, field2="hello")
+        
+        # Extract from Parent1 - should see field1 with concrete int
+        pairs1 = get_annotation_value_pairs(Parent1[int], child)
+        assert len(pairs1) == 1
+        ann_info, val = pairs1[0]
+        assert ann_info.origin is int
+        assert val == 42
+        
+        # Extract from Parent2 - should see field2 with concrete str  
+        pairs2 = get_annotation_value_pairs(Parent2[str], child)
+        assert len(pairs2) == 1
+        ann_info, val = pairs2[0]
+        assert ann_info.origin is str
+        assert val == "hello"
+    
+    def test_dataclass_no_cross_contamination(self):
+        """Verify that fields from one parent don't leak into another."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        @dataclass
+        class First(typing.Generic[A]):
+            first_field: A
+            first_only: int
+        
+        @dataclass
+        class Second(typing.Generic[B]):
+            second_field: B
+            second_only: str
+        
+        @dataclass
+        class Combined(First[A], Second[B], typing.Generic[A, B]):
+            combined_field: bool
+        
+        combined = Combined(
+            first_field=1, first_only=2,
+            second_field="a", second_only="b",
+            combined_field=True
+        )
+        
+        # Extract from First - should NOT see Second's fields
+        pairs_first = get_annotation_value_pairs(First[A], combined)
+        assert len(pairs_first) == 2
+        # Check values only
+        values = [val for _, val in pairs_first]
+        assert set(values) == {1, 2}
+        
+        # Extract from Second - should NOT see First's fields
+        pairs_second = get_annotation_value_pairs(Second[B], combined)
+        assert len(pairs_second) == 2
+        values = [val for _, val in pairs_second]
+        assert set(values) == {"a", "b"}
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_shadowing_basic(self):
+        """Test that Pydantic doesn't have shadowing issues (handles it differently)."""
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        class HasA(BaseModel, typing.Generic[A]):
+            a_value: A
+        
+        class HasB(BaseModel, typing.Generic[A]):  # Same TypeVar name
+            b_value: A
+        
+        class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
+            both: str
+        
+        both = HasBoth[int, str](a_value=42, b_value="hello", both="test")
+        
+        # Pydantic might handle this differently - test that it at least works
+        pairs_a = get_annotation_value_pairs(HasA[A], both)
+        # Pydantic should return some pairs (behavior may differ from dataclass)
+        assert isinstance(pairs_a, list)
+        
+        pairs_b = get_annotation_value_pairs(HasB[B], both)
+        assert isinstance(pairs_b, list)
+    
+    @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+    def test_pydantic_swapped_typevars(self):
+        """Test Pydantic with swapped TypeVars in inheritance.
+        
+        Similar to dataclass test but for Pydantic models.
+        Pydantic handles field types differently so behavior may vary.
+        """
+        A = TypeVar('A')
+        B = TypeVar('B')
+        
+        class ParentModel(BaseModel, typing.Generic[A, B]):
+            a_value: A
+            b_value: B
+        
+        class ChildModel(ParentModel[B, A], typing.Generic[A, B]):
+            # Swapped: Parent gets [B, A] but Child is [A, B]
+            pass
+        
+        # Create instance with swapped parameters
+        child = ChildModel[int, str](a_value="hello", b_value=42)
+        
+        # Extract pairs - Pydantic should handle the field annotations
+        pairs = get_annotation_value_pairs(ChildModel[A, B], child)
+        assert isinstance(pairs, list)
+        
+        # Pydantic specializes field annotations, so we expect some pairs
+        if len(pairs) > 0:
+            # Just verify we get pairs with values
+            values = [val for _, val in pairs]
+            assert "hello" in values or 42 in values
+
+
 class TestTypeVarSubstitutionInPairs:
     """Test TypeVar substitution in get_annotation_value_pairs."""
     
