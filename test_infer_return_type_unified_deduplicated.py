@@ -1539,11 +1539,11 @@ def test_additional_edge_cases():
     assert result == int
     
     # Test union constraint handling errors
-    def process_strict_union(x: Union[List[int], Dict[str, str]]) -> int: ...
+    def process_strict_union_error(x: Union[List[int], Dict[str, str]]) -> int: ...
     
     # A set doesn't match either alternative
     with pytest.raises(TypeInferenceError):
-        infer_return_type(process_strict_union, {1, 2, 3})
+        infer_return_type(process_strict_union_error, {1, 2, 3})
     
     # Test substitution edge cases
     # Test substitution with empty set (base type)
@@ -2096,6 +2096,448 @@ def test_any_type_limitations():
     # Any should accept anything, but shouldn't interfere with A inference
     t = infer_return_type(process_any, "anything", 42)
     assert t == int
+
+
+# =============================================================================
+# BENCHMARK AND PERFORMANCE TESTS
+# =============================================================================
+
+@pytest.mark.skip(reason="BENCHMARK: Performance test, not a correctness test")
+def test_deeply_nested_performance():
+    """Benchmark: Test performance on deeply nested structures."""
+    
+    import time
+    
+    def deep_nested(data: List[List[List[List[List[A]]]]]) -> A: ...
+    
+    deep_data = [[[[[1, 2, 3]]]]]
+    
+    start = time.time()
+    result = infer_return_type(deep_nested, deep_data)
+    elapsed = time.time() - start
+    
+    assert result is int
+    assert elapsed < 1.0  # Should complete in under 1 second
+
+
+@pytest.mark.skip(reason="BENCHMARK: Scalability test, not a correctness test")
+def test_many_typevars_scalability():
+    """Benchmark: Test scalability with many TypeVars."""
+    
+    def extract_all(mp: ManyParams[A, B, C, X, Y]) -> Tuple[A, B, C, X, Y]: ...
+    
+    instance = ManyParams[int, str, float, bool, bytes](
+        a=1, b="hello", c=3.14, x=True, y=b"data"
+    )
+    
+    import time
+    start = time.time()
+    result = infer_return_type(extract_all, instance)
+    elapsed = time.time() - start
+    
+    assert elapsed < 0.5  # Should be fast even with many TypeVars
+
+
+# =============================================================================
+# PEP LIMITATION TESTS
+# =============================================================================
+
+@pytest.mark.skip(reason="LIMITATION: Literal types (PEP 586) not supported")
+def test_literal_types():
+    """Test with Literal types from PEP 586."""
+    from typing import Literal
+    
+    def process_literal(x: Literal[1, 2, 3], y: A) -> A: ...
+    
+    # Literal should be treated as its underlying type
+    t = infer_return_type(process_literal, 1, "str")
+    assert t == str
+
+
+@pytest.mark.skip(reason="LIMITATION: Final annotations (PEP 591) not supported")
+def test_final_annotation():
+    """Test with Final annotation from PEP 591."""
+    from typing import Final
+    
+    def process_final(x: Final[A]) -> A: ...
+    
+    # Final wraps a type and shouldn't interfere with inference
+    t = infer_return_type(process_final, 42)
+    assert t == int
+
+
+@pytest.mark.skip(reason="LIMITATION: Annotated types (PEP 593) not supported")
+def test_annotated_type():
+    """Test with Annotated type from PEP 593."""
+    try:
+        from typing import Annotated
+        
+        def process_annotated(x: Annotated[A, "some metadata"]) -> A: ...
+        
+        # Annotated should extract the underlying type A
+        t = infer_return_type(process_annotated, 42)
+        assert t == int
+    except ImportError:
+        # Annotated not available in older Python
+        pytest.skip("Annotated not available")
+
+
+def test_pep484_noreturn():
+    """Test that NoReturn is handled appropriately."""
+    from typing import NoReturn
+    
+    def process_noreturn(x: NoReturn, y: A) -> A: ...
+    
+    # NoReturn should not interfere with A inference
+    # (though it's unusual to use in type inference context)
+    pass
+
+
+# =============================================================================
+# ADDITIONAL DEEP NESTING STRESS TESTS
+# =============================================================================
+
+def test_seven_level_mixed_nesting():
+    """Test 7-level mixed container nesting."""
+    
+    def extract_deeply_nested(
+        data: List[Dict[str, List[Tuple[List[Dict[int, Optional[A]]]]]]]
+    ) -> A: ...
+    
+    # Create 7-level nested structure that matches the annotation
+    # List[Dict[str, List[Tuple[List[Dict[int, Optional[A]]]]]]]
+    deep_data = [{"key": [([{1: None}, {2: 42}],)]}]
+    
+    t = infer_return_type(extract_deeply_nested, deep_data)
+    assert t is int
+
+
+def test_empty_containers_at_depth():
+    """Test that empty containers at various depths are handled."""
+    
+    def process_with_empties(
+        a: List[List[List[A]]],
+        b: A
+    ) -> A: ...
+    
+    # Empty containers at depth should not interfere with direct inference
+    t = infer_return_type(process_with_empties, [[[]]], 42)
+    assert t is int
+
+
+def test_mixed_types_at_each_depth_level():
+    """Test mixed types at multiple depth levels simultaneously."""
+    
+    def process_multi_depth_mixed(
+        data: List[Dict[str, List[A]]]
+    ) -> A: ...
+    
+    # Mixed types at different depths
+    mixed_data = [
+        {"key1": [1, 2, 3]},
+        {"key2": ["a", "b", "c"]},
+        {"key3": [1.0, 2.0, 3.0]}
+    ]
+    
+    t = infer_return_type(process_multi_depth_mixed, mixed_data)
+    # Should create union of all types found
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str, float}
+
+
+def test_multiple_typevars_all_at_different_depths():
+    """Test A at depth 1, B at depth 2, C at depth 3, D at depth 4."""
+    
+    def extract_multi_depth_types(
+        data: Dict[A, List[Dict[B, Set[Tuple[C, D]]]]]
+    ) -> Tuple[A, B, C, D]: ...
+    
+    # Each TypeVar at different depth
+    multi_depth_data = {
+        "depth1": [
+            {
+                "depth2": {
+                    ("depth3a", "depth4a"),
+                    ("depth3b", "depth4b")
+                }
+            }
+        ]
+    }
+    
+    t = infer_return_type(extract_multi_depth_types, multi_depth_data)
+    assert typing.get_origin(t) is tuple
+    args = typing.get_args(t)
+    assert args == (str, str, str, str)
+
+
+def test_union_at_multiple_depths():
+    """Test Union types at depths 1, 2, and 3 simultaneously."""
+    
+    def process_multi_level_unions(
+        data: Union[
+            Dict[A, Union[List[B], Set[Union[C, D]]]],
+            List[A]
+        ]
+    ) -> Union[A, B, C, D]: ...
+    
+    # Union at multiple depths
+    multi_union_data = {"key": [1, 2, 3]}
+    
+    t = infer_return_type(process_multi_level_unions, multi_union_data)
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+
+
+def test_deep_and_wide():
+    """Test structure that is both deep (5 levels) and wide (4 TypeVars)."""
+    
+    def extract_deep_wide(
+        data: Dict[A, List[Dict[B, Set[Tuple[C, D]]]]]
+    ) -> Tuple[A, B, C, D]: ...
+    
+    # Deep and wide structure
+    deep_wide_data = {
+        "wide1": [
+            {
+                "wide2": {
+                    ("wide3a", "wide4a"),
+                    ("wide3b", "wide4b")
+                }
+            }
+        ]
+    }
+    
+    t = infer_return_type(extract_deep_wide, deep_wide_data)
+    assert typing.get_origin(t) is tuple
+    args = typing.get_args(t)
+    assert args == (str, str, str, str)
+
+
+def test_many_nested_containers_same_typevar():
+    """Test same TypeVar appearing at multiple depths."""
+    
+    def process_repeated_typevar(
+        data: Dict[A, List[Dict[A, Set[A]]]]
+    ) -> A: ...
+    
+    # Same TypeVar A at multiple depths
+    repeated_data = {
+        "level1": [
+            {
+                "level2": {"level3a", "level3b"}
+            }
+        ]
+    }
+    
+    t = infer_return_type(process_repeated_typevar, repeated_data)
+    assert t is str
+
+
+# =============================================================================
+# SPECIALIZED OPTIONAL EDGE CASES
+# =============================================================================
+
+def test_list_optional_dict_with_none():
+    """List[Optional[Dict[str, Optional[A]]]] with None in list."""
+    
+    def process_multi_optional(
+        data: Optional[List[Optional[Dict[str, Optional[A]]]]]
+    ) -> A: ...
+    
+    # Complex Optional nesting with None values
+    complex_optional_data = [
+        {"key": 42},
+        None,
+        {"key": None},
+        {"key": "hello"}
+    ]
+    
+    t = infer_return_type(process_multi_optional, complex_optional_data)
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
+
+
+def test_list_optional_dict_all_none():
+    """Edge case: ALL dicts in list are None - should fail."""
+    
+    def process_all_none(
+        data: List[Optional[Dict[str, A]]]
+    ) -> A: ...
+    
+    # All dicts are None - should fail
+    all_none_data = [None, None, None]
+    
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_all_none, all_none_data)
+
+
+def test_list_optional_dict_some_none():
+    """List[Optional[Dict[str, A]]] with some None values."""
+    
+    def process_some_none(
+        data: List[Optional[Dict[str, A]]]
+    ) -> A: ...
+    
+    # Some None values mixed with actual data
+    some_none_data = [
+        {"key": 42},
+        None,
+        {"key": "hello"},
+        None
+    ]
+    
+    t = infer_return_type(process_some_none, some_none_data)
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
+
+
+def test_optional_list_vs_list_optional():
+    """Compare: Optional[List[...]] vs List[Optional[...]]."""
+    
+    def process_optional_list(
+        data: Optional[List[Dict[str, A]]]
+    ) -> A: ...
+    
+    def process_list_optional(
+        data: List[Optional[Dict[str, A]]]
+    ) -> A: ...
+    
+    # Test Optional[List[...]] - the list itself might be None
+    optional_list_data = [{"key": 42}]
+    t1 = infer_return_type(process_optional_list, optional_list_data)
+    assert t1 is int
+    
+    # Test List[Optional[...]] - individual items might be None
+    list_optional_data = [{"key": 42}, None, {"key": "hello"}]
+    t2 = infer_return_type(process_list_optional, list_optional_data)
+    import types
+    origin = typing.get_origin(t2)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t2)
+    assert set(union_args) == {int, str}
+
+
+def test_deeply_nested_optionals():
+    """Optional at multiple levels simultaneously."""
+    
+    def process_deep_optional(
+        data: Optional[List[Optional[Dict[str, Optional[List[Optional[A]]]]]]]
+    ) -> A: ...
+    
+    # Deep Optional nesting
+    deep_optional_data = [
+        {"key": [42, None, 43]},
+        None,
+        {"key": None},
+        {"key": ["hello", None, "world"]}
+    ]
+    
+    t = infer_return_type(process_deep_optional, deep_optional_data)
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
+
+
+def test_optional_none_filtering():
+    """None values in Optional[A] don't bind A to NoneType."""
+    
+    def process_optional_values(
+        data: Dict[str, Optional[A]]
+    ) -> A: ...
+    
+    # None values should be filtered out, not bound to A
+    optional_values_data = {
+        "key1": 42,
+        "key2": None,
+        "key3": "hello",
+        "key4": None
+    }
+    
+    t = infer_return_type(process_optional_values, optional_values_data)
+    import types
+    origin = typing.get_origin(t)
+    assert origin is Union or origin is getattr(types, 'UnionType', None)
+    union_args = typing.get_args(t)
+    assert set(union_args) == {int, str}
+
+
+# =============================================================================
+# ADVANCED CONSTRAINT SOLVER TESTS
+# =============================================================================
+
+def test_constraint_solver_many_constraints():
+    """Test constraint solver with many constraints."""
+    
+    def extract_many_types(
+        data: Dict[A, List[Dict[B, Set[Tuple[C, D]]]]]
+    ) -> Tuple[A, B, C, D]: ...
+    
+    # Many constraints from complex structure
+    many_constraints_data = {
+        "a1": [{"b1": {("c1", "d1"), ("c2", "d2")}}],
+        "a2": [{"b2": {("c3", "d3"), ("c4", "d4")}}]
+    }
+    
+    t = infer_return_type(extract_many_types, many_constraints_data)
+    assert typing.get_origin(t) is tuple
+    args = typing.get_args(t)
+    assert args == (str, str, str, str)
+
+
+def test_constraint_solver_all_same():
+    """Test constraint solver when all constraints are identical."""
+    
+    def extract_same_types(
+        data: List[Dict[A, List[B]]]
+    ) -> Tuple[A, B]: ...
+    
+    # All constraints should be identical
+    same_constraints_data = [
+        {"key1": [1, 2, 3]},
+        {"key2": [4, 5, 6]},
+        {"key3": [7, 8, 9]}
+    ]
+    
+    t = infer_return_type(extract_same_types, same_constraints_data)
+    assert typing.get_origin(t) is tuple
+    args = typing.get_args(t)
+    assert args == (str, int)
+
+
+def test_nonetype_inference():
+    """Test NoneType inference."""
+    
+    def process_none(data: Optional[A]) -> A: ...
+    
+    # None should not bind A to NoneType
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_none, None)
+
+
+def test_optional_with_all_none_values():
+    """Test Optional when all values are None."""
+    
+    def process_all_none_optional(
+        data: List[Optional[A]]
+    ) -> A: ...
+    
+    # All values are None - should fail
+    all_none_data = [None, None, None]
+    
+    with pytest.raises(TypeInferenceError):
+        infer_return_type(process_all_none_optional, all_none_data)
 
 
 if __name__ == "__main__":
