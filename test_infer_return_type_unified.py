@@ -28,13 +28,12 @@ X = TypeVar('X')
 Y = TypeVar('Y')
 
 # =============================================================================
-# SHARED TEST FIXTURES - Commonly used generic classes
+# CONSOLIDATED TEST FIXTURES - Unified generic classes
 # =============================================================================
-# These fixtures are used throughout the test suite to avoid duplication.
-# They cover common patterns: simple containers, nested structures,
-# multi-parameter generics, and recursive structures.
+# These fixtures consolidate all common patterns used throughout the test suite.
+# They eliminate duplication while maintaining comprehensive test coverage.
 
-# --- Simple Single-Parameter Containers ---
+# --- Core Single-Parameter Containers ---
 
 @dataclass
 class Wrap(typing.Generic[A]):
@@ -42,21 +41,9 @@ class Wrap(typing.Generic[A]):
     value: A
 
 
-@dataclass
-class Box(typing.Generic[A]):
-    """Alternative simple container (semantically same as Wrap)."""
-    item: A
-
-
-class BoxModel(BaseModel, typing.Generic[A]):
+class WrapModel(BaseModel, typing.Generic[A]):
     """Pydantic version of Box."""
-    item: A
-
-
-@dataclass
-class Container(typing.Generic[A]):
-    """Generic container for test data."""
-    data: A
+    value: A
 
 
 # --- Multi-Parameter Containers ---
@@ -97,33 +84,27 @@ class Level3(BaseModel, typing.Generic[A]):
     nested: Level2[A]
     extras: Dict[str, A]
 
-
-# --- Recursive Structures ---
+    
+# --- Graph and Network Structures ---
 
 @dataclass
-class TreeNode(typing.Generic[A]):
-    """Recursive tree structure for testing."""
+class GraphNode(typing.Generic[A]):
+    """Graph node with edges for network testing."""
     value: A
-    children: List['TreeNode[A]']
+    edges: List['GraphNode[A]']
 
 
 @dataclass
 class LinkedNode(typing.Generic[A]):
-    """Recursive linked list structure."""
+    """Simple node for linked list testing."""
     value: A
     next: Optional['LinkedNode[A]']
 
 
-# --- Inheritance Test Fixtures ---
+# --- Comprehensive Inheritance Test Fixtures ---
 
 @dataclass
-class BaseGeneric(typing.Generic[A]):
-    """Base generic class for inheritance tests."""
-    base_value: A
-
-
-@dataclass
-class DerivedGeneric(BaseGeneric[A], typing.Generic[A]):
+class DerivedWrap(Wrap[A], typing.Generic[A]):
     """Simple derived class maintaining same type parameter."""
     derived_value: int
 
@@ -135,12 +116,73 @@ class PartiallySpecialized(typing.Generic[A]):
     generic_items: List[A]  # Parameterized
 
 
-# --- JSON-like Structures ---
+# --- Advanced Inheritance Patterns ---
+
+@dataclass
+class DerivedDerivedWrap(DerivedWrap[A], typing.Generic[A]):
+    """Bottom-level class for inheritance chains."""
+    derived_derived_value: int
+
+
+@dataclass
+class ConcreteChild(Wrap[int]):
+    """Concrete specialization of BaseGeneric."""
+    extra: str
+
+
+# --- Multiple Inheritance Test Fixtures ---
+
+@dataclass
+class HasA(typing.Generic[A]):
+    """Class with TypeVar A for multiple inheritance tests."""
+    a_value: A
+
+
+@dataclass
+class HasB(typing.Generic[B]):
+    """Class with TypeVar B for multiple inheritance tests."""
+    b_value: B
+
+
+@dataclass
+class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
+    """Class inheriting from both HasA and HasB."""
+    both: str
+
+
+# --- Pydantic Inheritance Fixtures ---
+
+class ParentPyd(BaseModel, typing.Generic[A, B]):
+    """Pydantic parent class for inheritance testing."""
+    a_value: A
+    b_value: B
+
+
+class ChildPyd(ParentPyd[B, A], typing.Generic[A, B]):
+    """Pydantic child with swapped type parameters."""
+    pass
+
+
+# --- Complex Nested Structures ---
 
 @dataclass
 class JsonValue(typing.Generic[A]):
     """JSON-like nested structure for real-world patterns."""
     data: Union[A, Dict[str, 'JsonValue[A]'], List['JsonValue[A]']]
+
+
+@dataclass
+class DeepContainer(typing.Generic[A]):
+    """Deeply nested container for complex testing."""
+    deep_data: Dict[str, List[Dict[str, A]]]
+
+
+@dataclass
+class ComplexContainer(typing.Generic[A, B]):
+    """Complex container with multiple nested structures."""
+    lists_of_a: List[List[A]]           # A doubly nested in lists
+    dict_to_b: Dict[str, B]             # B nested in dict values
+    optional_a_list: Optional[List[A]]  # A nested in Optional[List[A]]
 
 
 # --- DataFrame-like Structures ---
@@ -158,6 +200,54 @@ class MultiColumnData(typing.Generic[A, B, C]):
     col1: TypedColumn[A]
     col2: TypedColumn[B]
     col3: TypedColumn[C]
+
+
+# --- Optional and Union Test Fixtures ---
+
+@dataclass
+class OptionalContainer(typing.Generic[A]):
+    """Container with optional nested field."""
+    maybe_items: Optional[List[A]]
+
+
+@dataclass
+class WithClassVar(typing.Generic[A]):
+    """Container with ClassVar for testing."""
+    instance_var: A
+    class_var: str = "class"  # ClassVar[str] = "class"
+
+
+# --- Extended Multi-Parameter Fixtures ---
+
+@dataclass
+class ManyParams(typing.Generic[A, B, C, X, Y]):
+    """Container with many type parameters for scalability testing."""
+    a: A
+    b: B  
+    c: C
+    x: X
+    y: Y
+
+
+# --- Specialized Test Fixtures ---
+
+@dataclass
+class DataStore(typing.Generic[A, B]):
+    """Data store with nested structures."""
+    data_map: Dict[str, List[A]]  # A is nested: str -> List[A]
+    metadata: Dict[A, B]          # Both A and B are in dict structure
+
+
+@dataclass
+class MultiVarContainer(typing.Generic[A, B]):
+    """Container with multiple TypeVars in same structure."""
+    pair_lists: List[Dict[A, B]]  # Both A and B nested in same structure
+
+
+@dataclass
+class ExtendedContainer(Wrap[A], typing.Generic[A, B]):
+    """Extended container adding new type parameter."""
+    extra_data: Dict[str, B]
 
 
 # =============================================================================
@@ -209,8 +299,8 @@ def test_basic_generic_classes():
     t = infer_return_type(unwrap, Wrap[int](value=1))
     assert t is int
 
-    def unbox(bs: List[BoxModel[A]]) -> List[A]: ...
-    t = infer_return_type(unbox, [BoxModel[int](item=1)])
+    def unbox(bs: List[WrapModel[A]]) -> List[A]: ...
+    t = infer_return_type(unbox, [WrapModel[int](value=1)])
     assert typing.get_origin(t) is list and typing.get_args(t) == (int,)
 
 
@@ -509,21 +599,16 @@ def test_complex_union_scenarios():
 def test_advanced_inheritance_and_specialization():
     """Test advanced inheritance chains and partial specialization"""
     
-    # TypeVar inheritance chain
-    @dataclass
-    class Base(typing.Generic[A, B]):
-        base_a: A
-        base_b: B
-    
+    # Use consolidated TwoParamContainer and create a derived class
     @dataclass 
-    class Derived(Base[A, str], typing.Generic[A]):  # Partially specialize B=str
+    class Derived(TwoParamContainer[A, str], typing.Generic[A]):  # Partially specialize B=str
         derived_data: List[A]
     
     def extract_from_derived(d: Derived[A]) -> Tuple[A, List[A]]: ...
     
     derived_instance = Derived[int](
-        base_a=42,
-        base_b="fixed_string", 
+        first=42,
+        second="fixed_string", 
         derived_data=[1, 2, 3]
     )
     
@@ -547,14 +632,14 @@ def test_advanced_inheritance_and_specialization():
     assert typing.get_origin(t_strings) is list and typing.get_args(t_strings) == (str,)
     
     # Recursive generic structure
-    def get_tree_value(node: TreeNode[A]) -> A: ...
-    def get_tree_children(node: TreeNode[A]) -> List[TreeNode[A]]: ...
+    def get_tree_value(node: GraphNode[A]) -> A: ...
+    def get_tree_children(node: GraphNode[A]) -> List[GraphNode[A]]: ...
     
-    tree = TreeNode[str](
+    tree = GraphNode[str](
         value="root",
-        children=[
-            TreeNode[str](value="child1", children=[]),
-            TreeNode[str](value="child2", children=[])
+        edges=[
+            GraphNode[str](value="child1", edges=[]),
+            GraphNode[str](value="child2", edges=[])
         ]
     )
     
@@ -567,7 +652,7 @@ def test_advanced_inheritance_and_specialization():
     assert typing.get_origin(t_children) is list
     children_arg = typing.get_args(t_children)[0]
     # The children type should be TreeNode[str]
-    assert typing.get_origin(children_arg) == TreeNode
+    assert typing.get_origin(children_arg) == GraphNode
 
 
 # =============================================================================
@@ -577,10 +662,10 @@ def test_advanced_inheritance_and_specialization():
 def test_nested_list_of_generics():
     """Test handling nested lists of generic types"""
 
-    def unwrap_box_list(w: Wrap[List[BoxModel[A]]]) -> List[A]: ...
+    def unwrap_box_list(w: Wrap[List[WrapModel[A]]]) -> List[A]: ...
 
-    boxes = [BoxModel[int](item=1), BoxModel[int](item=2)]
-    wrapped_boxes = Wrap[List[BoxModel[int]]](value=boxes)
+    boxes = [WrapModel[int](value=1), WrapModel[int](value=2)]
+    wrapped_boxes = Wrap[List[WrapModel[int]]](value=boxes)
 
     t = infer_return_type(unwrap_box_list, wrapped_boxes)
     assert typing.get_origin(t) is list and typing.get_args(t) == (int,)
@@ -802,14 +887,10 @@ def test_callable_type_variable_inference_limits():
 def test_generic_class_without_type_parameters():
     """Test behavior with generic classes that don't specify type parameters"""
     
-    @dataclass
-    class GenericContainer(typing.Generic[A]):
-        value: A
-    
-    def process_generic(container: GenericContainer[A]) -> A: ...
+    def process_generic(container: Wrap[A]) -> A: ...
     
     # Creating instance without explicit type parameter should still work
-    container = GenericContainer(value=42)  # No [int] specified
+    container = Wrap(value=42)  # No [int] specified
     
     # Should infer from the instance data
     t = infer_return_type(process_generic, container)
@@ -819,28 +900,20 @@ def test_generic_class_without_type_parameters():
 def test_inheritance_chain_type_binding():
     """Test TypeVar binding through inheritance chains"""
     
-    @dataclass
-    class BaseGeneric(typing.Generic[A]):
-        base_value: A
+    def process_derived(obj: ConcreteChild) -> int: ...
     
-    @dataclass
-    class DerivedGeneric(BaseGeneric[str]):  # Concrete specialization
-        derived_value: int
-    
-    def process_derived(obj: DerivedGeneric) -> str: ...
-    
-    derived = DerivedGeneric(base_value="hello", derived_value=42)
+    derived = ConcreteChild(value=42, extra="hello")
     t = infer_return_type(process_derived, derived)
-    assert t is str
+    assert t is int
     
     # More complex inheritance with TypeVars
     @dataclass  
-    class MultiLevel(DerivedGeneric, typing.Generic[B]):
+    class MultiLevel(ConcreteChild, typing.Generic[B]):
         extra: B
     
     def process_multi(obj: MultiLevel[B]) -> B: ...
     
-    multi = MultiLevel[float](base_value="hello", derived_value=42, extra=3.14)
+    multi = MultiLevel[float](value=42, extra=3.14)
     t = infer_return_type(process_multi, multi)
     assert t is float
 
@@ -1002,13 +1075,9 @@ def test_empty_vs_non_empty_container_combinations():
     
 def test_multiple_nested_typevars():
     
-    class PydanticModel(BaseModel, typing.Generic[A, B]):
-        a: A
-        b: B
-    
-    def process_pydantic_model(data: PydanticModel[A, list[B]]) -> B: ...
+    def process_pydantic_model(data: ParentPyd[A, list[B]]) -> B: ...
 
-    t = infer_return_type(process_pydantic_model, PydanticModel[int, list[str]](a=1, b=["hello", "world"]))
+    t = infer_return_type(process_pydantic_model, ParentPyd[int, list[str]](a_value=1, b_value=["hello", "world"]))
     assert t is str
 
 
@@ -1491,15 +1560,6 @@ def test_many_typevars_scalability():
     This is a performance benchmark to ensure constraint solving doesn't
     become too slow with many variables. Not a correctness test.
     """
-    # Define a type with many type parameters
-    @dataclass
-    class ManyParams(typing.Generic[A, B, C, X, Y]):
-        a: A
-        b: B  
-        c: C
-        x: X
-        y: Y
-    
     def extract_all(mp: ManyParams[A, B, C, X, Y]) -> Tuple[A, B, C, X, Y]: ...
     
     instance = ManyParams[int, str, float, bool, bytes](
@@ -1521,14 +1581,15 @@ def test_many_typevars_scalability():
 def test_nested_list_field_extraction():
     """Test that TypeVars can be inferred from nested list fields."""
     
+    # Use consolidated Container fixture
     @dataclass
-    class Container(typing.Generic[A]):
+    class ListContainer(typing.Generic[A]):
         nested_items: List[A]  # The TypeVar A is nested inside a List
     
-    def extract_item_type(container: Container[A]) -> A: ...
+    def extract_item_type(container: ListContainer[A]) -> A: ...
     
     # Create instance without explicit type parameters
-    container = Container(nested_items=[1, 2, 3])
+    container = ListContainer(nested_items=[1, 2, 3])
     
     # Should infer A = int from the nested list elements
     result_type = infer_return_type(extract_item_type, container)
@@ -1537,11 +1598,6 @@ def test_nested_list_field_extraction():
 
 def test_nested_dict_field_extraction():
     """Test that TypeVars can be inferred from nested dict fields."""
-    
-    @dataclass
-    class DataStore(typing.Generic[A, B]):
-        data_map: Dict[str, List[A]]  # A is nested: str -> List[A]
-        metadata: Dict[A, B]          # Both A and B are in dict structure
     
     def get_data_type(store: DataStore[A, B]) -> A: ...
     def get_metadata_type(store: DataStore[A, B]) -> B: ...
@@ -1563,10 +1619,6 @@ def test_nested_dict_field_extraction():
 
 def test_deeply_nested_field_extraction():
     """Test that TypeVars can be inferred from deeply nested structures."""
-    
-    @dataclass
-    class DeepContainer(typing.Generic[A]):
-        deep_data: Dict[str, List[Dict[str, A]]]  # A is deeply nested
     
     def extract_deep_type(container: DeepContainer[A]) -> A: ...
     
@@ -1591,10 +1643,6 @@ def test_deeply_nested_field_extraction():
 def test_optional_nested_field_extraction():
     """Test that TypeVars can be inferred from Optional nested fields."""
     
-    @dataclass  
-    class OptionalContainer(typing.Generic[A]):
-        maybe_items: Optional[List[A]]  # A is nested inside Optional[List[A]]
-    
     def extract_optional_type(container: OptionalContainer[A]) -> A: ...
     
     # Case 1: Non-None optional field
@@ -1610,12 +1658,6 @@ def test_optional_nested_field_extraction():
 
 def test_mixed_nested_structures():
     """Test TypeVar inference from mixed nested structures."""
-    
-    @dataclass
-    class ComplexContainer(typing.Generic[A, B]):
-        lists_of_a: List[List[A]]           # A doubly nested in lists
-        dict_to_b: Dict[str, B]             # B nested in dict values
-        optional_a_list: Optional[List[A]]  # A nested in Optional[List[A]]
     
     def extract_a_type(container: ComplexContainer[A, B]) -> A: ...
     def extract_b_type(container: ComplexContainer[A, B]) -> B: ...
@@ -1638,6 +1680,7 @@ def test_mixed_nested_structures():
 def test_pydantic_nested_field_extraction():
     """Test nested field extraction works with Pydantic models too."""
     
+    # Use consolidated ParentPyd fixture
     class NestedModel(BaseModel, typing.Generic[A]):
         nested_data: List[Dict[str, A]]  # A is nested inside List[Dict[str, A]]
     
@@ -1659,23 +1702,15 @@ def test_pydantic_nested_field_extraction():
 def test_inheritance_with_nested_extraction():
     """Test nested extraction works with inheritance chains."""
     
-    @dataclass
-    class BaseContainer(typing.Generic[A]):
-        base_data: List[A]
-    
-    @dataclass
-    class ExtendedContainer(BaseContainer[A], typing.Generic[A, B]):
-        extra_data: Dict[str, B]
-    
     def extract_base_type(container: ExtendedContainer[A, B]) -> A: ...
     def extract_extra_type(container: ExtendedContainer[A, B]) -> B: ...
     
     container = ExtendedContainer(
-        base_data=[1, 2, 3],
+        value=42,  # BaseGeneric field
         extra_data={"key": "value"}
     )
     
-    # Should infer A = int from inherited base_data list
+    # Should infer A = int from inherited base_value
     base_type = infer_return_type(extract_base_type, container)
     assert base_type is int
     
@@ -1686,10 +1721,6 @@ def test_inheritance_with_nested_extraction():
 
 def test_multiple_typevar_same_nested_structure():
     """Test multiple TypeVars in the same nested structure."""
-    
-    @dataclass
-    class MultiVarContainer(typing.Generic[A, B]):
-        pair_lists: List[Dict[A, B]]  # Both A and B nested in same structure
     
     def extract_key_type(container: MultiVarContainer[A, B]) -> A: ...
     def extract_value_type(container: MultiVarContainer[A, B]) -> B: ...
@@ -1713,6 +1744,7 @@ def test_multiple_typevar_same_nested_structure():
 def test_comparison_with_explicit_types():
     """Test that nested extraction gives same results as explicit type parameters."""
     
+    # Use consolidated Container fixture
     @dataclass
     class TestContainer(typing.Generic[A]):
         nested_list: List[A]
@@ -2066,14 +2098,10 @@ def test_tuple_fixed_length_partial_match():
 def test_custom_generic_fallback_paths():
     """Test fallback paths in custom generic handling."""
     
-    @dataclass
-    class CustomGeneric(typing.Generic[A]):
-        data: A
-    
     # Test without __orig_class__ - should fall back to field extraction
-    def process_custom(c: CustomGeneric[A]) -> A: ...
+    def process_custom(c: Wrap[A]) -> A: ...
     
-    instance = CustomGeneric(data=42)
+    instance = Wrap(value=42)
     # Remove __orig_class__ if it exists to test fallback
     if hasattr(instance, '__orig_class__'):
         delattr(instance, '__orig_class__')
@@ -2271,9 +2299,9 @@ def test_forward_reference_simple():
     @dataclass
     class Node:
         value: int
-        next: Optional['Node'] = None
+        next: Optional['LinkedNode'] = None
     
-    def get_value(node: 'Node') -> int: ...
+    def get_value(node: 'LinkedNode') -> int: ...
     
     node = Node(value=42)
     # This exercises the ForwardRef handling path
@@ -2287,9 +2315,9 @@ def test_forward_reference_simple():
 def test_forward_reference_with_generics():
     """Test ForwardRef with generic type parameters."""
     
-    def extract_value(node: 'TreeNode[A]') -> A: ...
+    def extract_value(node: 'GraphNode[A]') -> A: ...
     
-    tree = TreeNode[str](value="root", children=[])
+    tree = GraphNode[str](value="root", edges=[])
     t = infer_return_type(extract_value, tree)
     assert t == str
 
@@ -3234,11 +3262,6 @@ def test_classvar_in_dataclass():
     """Test that ClassVar is handled appropriately."""
     from typing import ClassVar
     
-    @dataclass
-    class WithClassVar(typing.Generic[A]):
-        class_var: ClassVar[str] = "class"
-        instance_var: A
-    
     def process_class(obj: WithClassVar[A]) -> A: ...
     
     instance = WithClassVar[int](instance_var=42)
@@ -3357,16 +3380,12 @@ def test_type_inference_error_from_unification_error():
 def test_triple_nested_generic_classes():
     """Test Box[Box[Box[A]]] - deep generic class nesting."""
     
-    @dataclass
-    class Box(typing.Generic[A]):
-        content: A
-    
-    def triple_unbox(b: Box[Box[Box[A]]]) -> A: ...
+    def triple_unbox(b: Wrap[Wrap[Wrap[A]]]) -> A: ...
     
     # Create deeply nested boxes
-    innermost = Box[int](content=42)
-    middle = Box[Box[int]](content=innermost)
-    outer = Box[Box[Box[int]]](content=middle)
+    innermost = Wrap[int](value=42)
+    middle = Wrap[Wrap[int]](value=innermost)
+    outer = Wrap[Wrap[Wrap[int]]](value=middle)
     
     t = infer_return_type(triple_unbox, outer)
     assert t is int
@@ -3375,17 +3394,13 @@ def test_triple_nested_generic_classes():
 def test_quadruple_nested_generic_classes():
     """Test Box[Box[Box[Box[A]]]] - very deep generic nesting."""
     
-    @dataclass
-    class Container(typing.Generic[A]):
-        value: A
-    
-    def quad_extract(c: Container[Container[Container[Container[A]]]]) -> A: ...
+    def quad_extract(c: Wrap[Wrap[Wrap[Wrap[A]]]]) -> A: ...
     
     # Build from inside out
-    level1 = Container[str](value="deep")
-    level2 = Container[Container[str]](value=level1)
-    level3 = Container[Container[Container[str]]](value=level2)
-    level4 = Container[Container[Container[Container[str]]]](value=level3)
+    level1 = Wrap[str](value="deep")
+    level2 = Wrap[Wrap[str]](value=level1)
+    level3 = Wrap[Wrap[Wrap[str]]](value=level2)
+    level4 = Wrap[Wrap[Wrap[Wrap[str]]]](value=level3)
     
     t = infer_return_type(quad_extract, level4)
     assert t is str
@@ -3394,23 +3409,16 @@ def test_quadruple_nested_generic_classes():
 def test_mixed_generic_classes_deep_nesting():
     """Test Wrapper[Box[Container[A]]] - different generic classes nested."""
     
+    # Use consolidated fixtures
     @dataclass
     class Wrapper(typing.Generic[A]):
         wrapped: A
     
-    @dataclass
-    class Box(typing.Generic[A]):
-        item: A
+    def extract_mixed(w: Wrapper[Wrap[Wrap[A]]]) -> A: ...
     
-    @dataclass
-    class Container(typing.Generic[A]):
-        data: A
-    
-    def extract_mixed(w: Wrapper[Box[Container[A]]]) -> A: ...
-    
-    inner = Container[float](data=3.14)
-    middle = Box[Container[float]](item=inner)
-    outer = Wrapper[Box[Container[float]]](wrapped=middle)
+    inner = Wrap[float](value=3.14)
+    middle = Wrap[Wrap[float]](value=inner)
+    outer = Wrapper[Wrap[Wrap[float]]](wrapped=middle)
     
     t = infer_return_type(extract_mixed, outer)
     assert t is float
@@ -3419,24 +3427,13 @@ def test_mixed_generic_classes_deep_nesting():
 def test_pydantic_dataclass_mixed_deep_nesting():
     """Test deep nesting mixing Pydantic and dataclasses."""
     
-    @dataclass
-    class DataBox(typing.Generic[A]):
-        value: A
-    
-    class PydanticWrapper(BaseModel, typing.Generic[A]):
-        content: A
-    
-    @dataclass
-    class DataContainer(typing.Generic[A]):
-        item: A
-    
+    # Use consolidated fixtures
     def extract_from_mix(
-        p: PydanticWrapper[DataBox[DataContainer[A]]]
+        p: WrapModel[Wrap[A]]
     ) -> A: ...
     
-    inner = DataContainer[int](item=99)
-    middle = DataBox[DataContainer[int]](value=inner)
-    outer = PydanticWrapper[DataBox[DataContainer[int]]](content=middle)
+    inner = Wrap[int](value=99)
+    outer = WrapModel[Wrap[int]](value=inner)
     
     t = infer_return_type(extract_from_mix, outer)
     assert t is int
@@ -3561,19 +3558,19 @@ def test_triple_recursive_tree():
     """Test TreeNode[TreeNode[TreeNode[A]]] - 3-level recursive structure."""
 
     def extract_from_deep_tree(
-        tree: TreeNode[TreeNode[TreeNode[A]]]
+        tree: GraphNode[GraphNode[GraphNode[A]]]
     ) -> A: ...
     
     # Innermost nodes
-    leaf1 = TreeNode[int](value=1, children=[])
-    leaf2 = TreeNode[int](value=2, children=[])
+    leaf1 = GraphNode[int](value=1, edges=[])
+    leaf2 = GraphNode[int](value=2, edges=[])
     
     # Middle level
-    middle1 = TreeNode[TreeNode[int]](value=leaf1, children=[])
-    middle2 = TreeNode[TreeNode[int]](value=leaf2, children=[])
+    middle1 = GraphNode[GraphNode[int]](value=leaf1, edges=[])
+    middle2 = GraphNode[GraphNode[int]](value=leaf2, edges=[])
     
     # Top level
-    root = TreeNode[TreeNode[TreeNode[int]]](value=middle1, children=[])
+    root = GraphNode[GraphNode[GraphNode[int]]](value=middle1, edges=[])
     
     t = infer_return_type(extract_from_deep_tree, root)
     assert t is int
@@ -3582,19 +3579,14 @@ def test_triple_recursive_tree():
 def test_linked_list_depth():
     """Test deep linked list structure."""
     
-    @dataclass
-    class Node(typing.Generic[A]):
-        value: A
-        next: Optional['Node[A]']
-    
-    def extract_value_from_list(node: Node[A]) -> A: ...
+    def extract_value_from_list(node: LinkedNode[A]) -> A: ...
     
     # Create 5-deep linked list
-    node5 = Node[str](value="end", next=None)
-    node4 = Node[str](value="four", next=node5)
-    node3 = Node[str](value="three", next=node4)
-    node2 = Node[str](value="two", next=node3)
-    node1 = Node[str](value="one", next=node2)
+    node5 = LinkedNode[str](value="end", next=None)
+    node4 = LinkedNode[str](value="four", next=node5)
+    node3 = LinkedNode[str](value="three", next=node4)
+    node2 = LinkedNode[str](value="two", next=node3)
+    node1 = LinkedNode[str](value="one", next=node2)
     
     t = infer_return_type(extract_value_from_list, node1)
     assert t is str
@@ -3602,11 +3594,6 @@ def test_linked_list_depth():
 
 def test_graph_like_structure():
     """Test graph-like structure with multiple paths."""
-    
-    @dataclass
-    class GraphNode(typing.Generic[A]):
-        value: A
-        edges: List['GraphNode[A]']
     
     def extract_node_type(node: GraphNode[A]) -> A: ...
     
