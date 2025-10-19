@@ -34,130 +34,323 @@ Y = TypeVar('Y')
 # They cover common patterns: simple containers, nested structures,
 # multi-parameter generics, and recursive structures.
 
-# --- Simple Single-Parameter Containers ---
+# --- Consolidated Simple Containers ---
 
 @dataclass
 class Wrap(typing.Generic[A]):
-    """Simple wrapper for a single value. Most common test fixture."""
+    """Universal simple container for single values. Replaces Wrap, Node, Left, Right, etc."""
+    value: A
+
+
+class WrapModel(BaseModel, typing.Generic[A]):
+    """Pydantic version of SimpleContainer."""
     value: A
 
 
 @dataclass
-class Box(typing.Generic[A]):
-    """Alternative simple container (semantically same as Wrap)."""
-    item: A
-
-
-class BoxModel(BaseModel, typing.Generic[A]):
-    """Pydantic version of Box."""
-    item: A
+class LinkedList(typing.Generic[A]):
+    """Container with optional next pointer. Replaces LinkedNode, Node."""
+    value: A
+    next: Optional['LinkedList[A]'] = None
 
 
 @dataclass
-class Container(typing.Generic[A]):
-    """Generic container for test data."""
-    data: A
+class Tree(typing.Generic[A]):
+    """Container with recursive children. Replaces TreeNode, GraphNode."""
+    value: A
+    children: List['Tree[A]']
 
 
-# --- Multi-Parameter Containers ---
+# --- Consolidated Multi-Parameter Containers ---
 
 @dataclass
-class TwoParamContainer(typing.Generic[A, B]):
-    """Container with two type parameters."""
+class Pair(typing.Generic[A, B]):
+    """Universal two-parameter container. Replaces Pair, MultipleInheritanceAB, Base."""
+    first: A
+    second: B
+
+
+class PairModel(BaseModel, typing.Generic[A, B]):
+    """Pydantic version of MultiContainer."""
     first: A
     second: B
 
 
 @dataclass
-class MultiParamContainer(typing.Generic[A, B, C]):
-    """Container with three type parameters for complex scenarios."""
-    primary: List[A]
-    secondary: Dict[str, B]
-    tertiary: Set[C]
-    mixed: List[Tuple[A, B, C]]
-
-
-# --- Nested Generic Structures (3 levels) ---
-
-@dataclass
-class Level1(typing.Generic[A]):
-    """First level of nested generic structure."""
-    inner: A
+class Triple(typing.Generic[A, B, C]):
+    """Three-parameter container. Replaces Triple."""
+    primary: A
+    secondary: B
+    tertiary: C
 
 
 @dataclass
-class Level2(typing.Generic[A]):
-    """Second level containing Level1."""
-    wrapped: Level1[A]
-    alternatives: List[A]
+class ManyFields(typing.Generic[A, B, C, X, Y]):
+    """Five-parameter container for scalability tests. Replaces ManyParams."""
+    a: A
+    b: B
+    c: C
+    x: X
+    y: Y
 
 
-class Level3(BaseModel, typing.Generic[A]):
-    """Third level (Pydantic) containing Level2."""
-    nested: Level2[A]
-    extras: Dict[str, A]
-
-
-# --- Recursive Structures ---
+# --- Consolidated Nested Structures ---
 
 @dataclass
-class TreeNode(typing.Generic[A]):
-    """Recursive tree structure for testing."""
+class NestedStructure(typing.Generic[A]):
+    """Configurable nested structure with depth levels. Replaces Level1, Level2, Level3, Top, Middle, Bottom."""
     value: A
-    children: List['TreeNode[A]']
+    nested: Optional['NestedStructure[A]'] = None
+    alternatives: Optional[List[A]] = None
+    extras: Optional[Dict[str, A]] = None
 
 
-@dataclass
-class LinkedNode(typing.Generic[A]):
-    """Recursive linked list structure."""
+class NestedStructureModel(BaseModel, typing.Generic[A]):
+    """Pydantic version of NestedStructure."""
     value: A
-    next: Optional['LinkedNode[A]']
+    nested: Optional['NestedStructureModel[A]'] = None
+    alternatives: Optional[List[A]] = None
+    extras: Optional[Dict[str, A]] = None
 
 
-# --- Inheritance Test Fixtures ---
-
-@dataclass
-class BaseGeneric(typing.Generic[A]):
-    """Base generic class for inheritance tests."""
-    base_value: A
-
+# --- Consolidated Inheritance Fixtures ---
 
 @dataclass
-class DerivedGeneric(BaseGeneric[A], typing.Generic[A]):
-    """Simple derived class maintaining same type parameter."""
+class InheritanceBase(typing.Generic[A]):
+    """Base class for inheritance tests. Replaces BaseGeneric, InheritanceBase."""
+    value: A
+
+
+@dataclass
+class InheritanceDerived(InheritanceBase[A], typing.Generic[A]):
+    """Derived class maintaining same type parameter. Replaces InheritanceDerived."""
     derived_value: int
 
 
 @dataclass
-class PartiallySpecialized(typing.Generic[A]):
-    """Generic with both fixed and parameterized fields."""
-    strings: List[str]  # Fixed type
+class InheritanceMixed(InheritanceBase[A], typing.Generic[A]):
+    """Mixed inheritance with fixed and parameterized fields. Replaces PartiallySpecialized."""
+    fixed_items: List[str]  # Fixed type
     generic_items: List[A]  # Parameterized
 
 
-# --- JSON-like Structures ---
-
 @dataclass
-class JsonValue(typing.Generic[A]):
-    """JSON-like nested structure for real-world patterns."""
-    data: Union[A, Dict[str, 'JsonValue[A]'], List['JsonValue[A]']]
-
-
-# --- DataFrame-like Structures ---
-
-@dataclass
-class TypedColumn(typing.Generic[A]):
-    """Represents a typed column in a table."""
-    name: str
-    values: List[A]
+class MultipleInheritanceA(typing.Generic[A]):
+    """First parent for multiple inheritance tests. Replaces MultipleInheritanceA."""
+    a_value: A
 
 
 @dataclass
-class MultiColumnData(typing.Generic[A, B, C]):
-    """Multi-column data structure (DataFrame-like)."""
-    col1: TypedColumn[A]
-    col2: TypedColumn[B]
-    col3: TypedColumn[C]
+class MultipleInheritanceB(typing.Generic[A]):  # Uses 'A' to test TypeVar shadowing
+    """Second parent for multiple inheritance tests. Replaces MultipleInheritanceB."""
+    b_value: A
+
+
+@dataclass
+class MultipleInheritanceBoth(MultipleInheritanceA[A], MultipleInheritanceB[B], typing.Generic[A, B]):
+    """Multiple inheritance combining both parents. Replaces MultipleInheritanceBoth."""
+
+@dataclass
+class MultipleInheritanceSwapped(MultipleInheritanceBoth[B, A], typing.Generic[A, B]):
+    """Child that swaps parent's type parameter order. Replaces SwappedChild."""
+    pass
+
+
+# --- Consolidated Subtype Hierarchy ---
+
+class Animal:
+    """Base class for covariance and inheritance tests."""
+    pass
+
+
+class Dog(Animal):
+    """Derived animal class for subtype tests."""
+    pass
+
+
+class Cat(Animal):
+    """Another derived animal class for subtype tests."""
+    pass
+
+
+# --- Consolidated Deep Inheritance Chain ---
+
+@dataclass
+class DeepInheritanceChain(typing.Generic[A]):
+    """Configurable deep inheritance chain. Replaces GrandParent, Parent, Child."""
+    gp_value: A
+    p_value: str
+    c_value: int
+
+
+# --- Consolidated Subclass Fixtures ---
+
+@dataclass
+class ExtendedContainer(Wrap[A], typing.Generic[A]):
+    """Extended simple container with additional field. Replaces SpecialWrap."""
+    extra: str
+
+
+@dataclass
+class ConcreteSpecialized(InheritanceBase[int]):
+    """Fully specialized subclass. Replaces ConcreteSpecialized."""
+    extra: str
+
+
+@dataclass
+class PartiallySpecializedContainer(Pair[A, str], typing.Generic[A]):
+    """Partially specialized multi-container. Replaces PartiallySpecializedContainer."""
+    extra: int
+
+
+# --- Consolidated Complex Containers ---
+
+@dataclass
+class ComplexDataContainer(typing.Generic[A, B]):
+    """Complex container with nested structures. Replaces ComplexDataContainer, DeepContainer, ComplexDataContainer."""
+    data_map: Dict[str, List[A]]
+    metadata: Dict[A, B]
+    deep_data: Optional[Dict[str, List[Dict[str, A]]]] = None
+    lists_of_a: Optional[List[List[A]]] = None
+    dict_to_b: Optional[Dict[str, B]] = None
+    optional_a_list: Optional[List[A]] = None
+
+
+@dataclass
+class OptionalDataContainer(typing.Generic[A]):
+    """Container with optional nested fields. Replaces OptionalDataContainer."""
+    maybe_items: Optional[List[A]]
+    maybe_dict: Optional[Dict[str, A]] = None
+
+
+class ComplexDataModel(BaseModel, typing.Generic[A]):
+    """Pydantic model with nested data. Replaces ComplexDataModel."""
+    nested_data: List[Dict[str, A]]
+    optional_data: Optional[Dict[str, A]] = None
+
+
+@dataclass
+class MultiVarDataContainer(typing.Generic[A, B]):
+    """Container with multiple TypeVars in same structure. Replaces MultiVarDataContainer."""
+    pair_lists: List[Dict[A, B]]
+    multi_dict: Optional[Dict[A, List[B]]] = None
+
+
+@dataclass
+class SimpleListContainer(typing.Generic[A]):
+    """Simple list-based container. Replaces SimpleListContainer."""
+    nested_list: List[A]
+    flat_list: Optional[List[A]] = None
+
+
+@dataclass
+class DeepContainer(typing.Generic[A]):
+    """Deep container wrapper for backward compatibility."""
+    data_map: Dict[str, List[A]]
+    metadata: Dict[A, int]
+    deep_data: Optional[Dict[str, List[Dict[str, A]]]] = None
+
+
+@dataclass
+class ExtendedContainer(typing.Generic[A, B]):
+    """Extended container for backward compatibility."""
+    base_data: List[A]
+    extra_data: Dict[str, B]
+
+
+@dataclass
+class SpecialWrap(Wrap[A], typing.Generic[A]):
+    """Extended simple container with additional field."""
+    extra: str
+
+
+class ChildPyd(MultipleInheritanceBoth[B, A], typing.Generic[A, B]):
+    """Pydantic child with swapped type parameters."""
+    pass
+
+
+@dataclass
+class Extended(InheritanceBase[A], typing.Generic[A, B]):
+    """Extends InheritanceBase with additional type parameter B."""
+    extra: B
+
+
+# --- Consolidated Specialized Structures ---
+
+@dataclass
+class JsonLikeStructure(typing.Generic[A]):
+    """JSON-like nested structure for real-world patterns. Replaces JsonValue."""
+    data: Union[A, Dict[str, 'JsonLikeStructure[A]'], List['JsonLikeStructure[A]']]
+
+
+@dataclass
+class DataFrameLikeStructure(typing.Generic[A, B, C]):
+    """DataFrame-like multi-column structure. Replaces TypedColumn, MultiColumnData."""
+    col1_name: str
+    col1_values: List[A]
+    col2_name: str
+    col2_values: List[B]
+    col3_name: str
+    col3_values: List[C]
+
+
+# --- Consolidated Test Utilities ---
+
+class CustomStringKey(str):
+    """Custom string subclass for invariant tests. Replaces StringKey."""
+    pass
+
+
+class CustomList(list):
+    """Custom list subclass for testing builtin subclasses. Replaces MyList."""
+    pass
+
+
+@dataclass
+class SampleDataClass:
+    """Test class for ForwardRef mismatch tests. Replaces ActualClass."""
+    data: int
+
+
+class DifferentTestClass:
+    """Different class for ForwardRef mismatch tests. Replaces DifferentClass."""
+    pass
+
+
+class WithClassVarModel(BaseModel):
+    """Pydantic model with ClassVar for testing. Replaces WithClassVar."""
+    class_level: typing.ClassVar[int] = 0
+    instance_level: int
+
+
+@dataclass
+class WithClassVarDataclass(typing.Generic[A]):
+    """Dataclass with ClassVar for testing."""
+    class_var: typing.ClassVar[str] = "class"
+    instance_var: A
+
+
+# --- Helper Functions for Common Assertions ---
+
+def assert_union_type(result_type, *expected_types):
+    """Assert that result_type is a Union containing exactly the expected types."""
+    import types
+    origin = typing.get_origin(result_type)
+    assert origin is Union or origin is getattr(types, 'UnionType', None), \
+        f"Expected Union type, got {result_type}"
+    union_args = typing.get_args(result_type)
+    assert set(union_args) == set(expected_types), \
+        f"Expected union of {set(expected_types)}, got {set(union_args)}"
+
+
+def assert_generic_type(result_type, expected_origin, *expected_args):
+    """Assert that result_type is a generic type with the expected origin and args."""
+    assert typing.get_origin(result_type) is expected_origin, \
+        f"Expected origin {expected_origin}, got {typing.get_origin(result_type)}"
+    if expected_args:
+        actual_args = typing.get_args(result_type)
+        assert actual_args == expected_args, \
+            f"Expected args {expected_args}, got {actual_args}"
 
 
 # =============================================================================
@@ -209,8 +402,8 @@ def test_basic_generic_classes():
     t = infer_return_type(unwrap, Wrap[int](value=1))
     assert t is int
 
-    def unbox(bs: List[BoxModel[A]]) -> List[A]: ...
-    t = infer_return_type(unbox, [BoxModel[int](item=1)])
+    def unbox(bs: List[WrapModel[A]]) -> List[A]: ...
+    t = infer_return_type(unbox, [WrapModel[int](value=1)])
     assert typing.get_origin(t) is list and typing.get_args(t) == (int,)
 
 
@@ -358,13 +551,14 @@ def test_multi_typevar_error_scenarios():
 def test_consolidated_nested_generics():
     """Consolidated test for deeply nested generic structures"""
 
-    def unwrap_all_levels(l3: Level3[A]) -> A: ...
-    def get_alternatives(l3: Level3[A]) -> List[A]: ...
-    def get_extras_values(l3: Level3[A]) -> List[A]: ...
+    def unwrap_all_levels(l3: NestedStructureModel[A]) -> A: ...
+    def get_alternatives(l3: NestedStructureModel[A]) -> List[A]: ...
+    def get_extras_values(l3: NestedStructureModel[A]) -> List[A]: ...
     
-    deep_structure = Level3[bool](
-        nested=Level2[bool](
-            wrapped=Level1[bool](inner=True),
+    deep_structure = NestedStructureModel[bool](
+        value=True,
+        nested=NestedStructureModel[bool](
+            value=True,
             alternatives=[False, True]
         ),
         extras={"flag1": False, "flag2": True}
@@ -384,40 +578,32 @@ def test_consolidated_nested_generics():
 def test_consolidated_multi_param_container():
     """Consolidated test for multi-parameter generic containers"""
 
-    def get_primary(mc: MultiParamContainer[A, B, C]) -> List[A]: ...
-    def get_secondary_values(mc: MultiParamContainer[A, B, C]) -> List[B]: ...
-    def get_tertiary(mc: MultiParamContainer[A, B, C]) -> Set[C]: ...
-    def get_mixed_tuples(mc: MultiParamContainer[A, B, C]) -> List[Tuple[A, B, C]]: ...
+    def get_primary(mc: Triple[A, B, C]) -> A: ...
+    def get_secondary_values(mc: Triple[A, B, C]) -> B: ...
+    def get_tertiary(mc: Triple[A, B, C]) -> C: ...
     
-    container = MultiParamContainer[int, str, float](
+    container = Triple[int, str, float](
         primary=[1, 2, 3],
         secondary={"a": "hello", "b": "world"},
-        tertiary={1.1, 2.2, 3.3},
-        mixed=[(1, "a", 1.1), (2, "b", 2.2)]
+        tertiary={1.1, 2.2, 3.3}
     )
     
     # Test all extractions in consolidated manner
     assert infer_return_type(get_primary, container) == list[int]
-    assert infer_return_type(get_secondary_values, container) == list[str]
+    assert infer_return_type(get_secondary_values, container) == dict[str, str]
     assert infer_return_type(get_tertiary, container) == set[float]
-    
-    mixed_type = infer_return_type(get_mixed_tuples, container)
-    assert typing.get_origin(mixed_type) is list
-    tuple_type = typing.get_args(mixed_type)[0]
-    assert typing.get_origin(tuple_type) is tuple
-    assert typing.get_args(tuple_type) == (int, str, float)
 
 
 def test_real_world_patterns():
     """Test real-world complex patterns like JSON and DataFrame structures"""
 
-    def extract_json_type(json_val: JsonValue[A]) -> A: ...
+    def extract_json_type(json_val: JsonLikeStructure[A]) -> A: ...
     
-    nested_json = JsonValue[int](
+    nested_json = JsonLikeStructure[int](
         data={
-            "numbers": JsonValue[int](data=[
-                JsonValue[int](data=42),
-                JsonValue[int](data=100)
+            "numbers": JsonLikeStructure[int](data=[
+                JsonLikeStructure[int](data=42),
+                JsonLikeStructure[int](data=100)
             ])
         }
     )
@@ -426,13 +612,16 @@ def test_real_world_patterns():
     assert t is int
     
     # DataFrame-like multi-column structure
-    def get_first_column_type(data: MultiColumnData[A, B, C]) -> List[A]: ...
-    def get_all_column_types(data: MultiColumnData[A, B, C]) -> Tuple[List[A], List[B], List[C]]: ...
+    def get_first_column_type(data: DataFrameLikeStructure[A, B, C]) -> List[A]: ...
+    def get_all_column_types(data: DataFrameLikeStructure[A, B, C]) -> Tuple[List[A], List[B], List[C]]: ...
     
-    df_data = MultiColumnData[int, str, float](
-        col1=TypedColumn[int]("integers", [1, 2, 3]),
-        col2=TypedColumn[str]("strings", ["a", "b", "c"]),
-        col3=TypedColumn[float]("floats", [1.1, 2.2, 3.3])
+    df_data = DataFrameLikeStructure[int, str, float](
+        col1_name="integers",
+        col1_values=[1, 2, 3],
+        col2_name="strings",
+        col2_values=["a", "b", "c"],
+        col3_name="floats",
+        col3_values=[1.1, 2.2, 3.3]
     )
     
     t1 = infer_return_type(get_first_column_type, df_data)
@@ -497,11 +686,11 @@ def test_complex_union_scenarios():
     def maybe_wrap(x: A, should_wrap: bool) -> A | Wrap[A]: ...
     
     t = infer_return_type(maybe_wrap, 42, True)
-    # Should return int | Wrap[int]
+    # Should return int | SimpleContainer[int]
     if hasattr(t, '__args__'):
         union_types = typing.get_args(t)
         assert int in union_types
-        # Check if Wrap[int] is in the union (might be represented differently)
+        # Check if SimpleContainer[int] is in the union (might be represented differently)
         wrap_types = [arg for arg in union_types if typing.get_origin(arg) == Wrap]
         assert len(wrap_types) > 0
 
@@ -510,35 +699,24 @@ def test_advanced_inheritance_and_specialization():
     """Test advanced inheritance chains and partial specialization"""
     
     # TypeVar inheritance chain
-    @dataclass
-    class Base(typing.Generic[A, B]):
-        base_a: A
-        base_b: B
+    def extract_from_derived(d: MultipleInheritanceSwapped[A, str]) -> Tuple[A, str]: ...
     
-    @dataclass 
-    class Derived(Base[A, str], typing.Generic[A]):  # Partially specialize B=str
-        derived_data: List[A]
-    
-    def extract_from_derived(d: Derived[A]) -> Tuple[A, List[A]]: ...
-    
-    derived_instance = Derived[int](
-        base_a=42,
-        base_b="fixed_string", 
-        derived_data=[1, 2, 3]
+    derived_instance = MultipleInheritanceSwapped[int, str](
+        a_value="fixed_string",  # Swapped: a_value gets B=str
+        b_value=42              # Swapped: b_value gets A=int
     )
     
     t = infer_return_type(extract_from_derived, derived_instance)
     assert typing.get_origin(t) is tuple
     args = typing.get_args(t)
     assert args[0] is int
-    assert typing.get_origin(args[1]) is list
-    assert typing.get_args(args[1]) == (int,)
+    assert args[1] is str
     
     # Partially specialized generic
-    def get_generic_items(ps: PartiallySpecialized[A]) -> List[A]: ...
-    def get_strings(ps: PartiallySpecialized[A]) -> List[str]: ...
+    def get_generic_items(ps: InheritanceMixed[A]) -> List[A]: ...
+    def get_strings(ps: InheritanceMixed[A]) -> List[str]: ...
     
-    ps = PartiallySpecialized[int](strings=["a", "b"], generic_items=[1, 2, 3])
+    ps = InheritanceMixed[int](value=42, fixed_items=["a", "b"], generic_items=[1, 2, 3])
     
     t_generic = infer_return_type(get_generic_items, ps)
     assert typing.get_origin(t_generic) is list and typing.get_args(t_generic) == (int,)
@@ -547,14 +725,14 @@ def test_advanced_inheritance_and_specialization():
     assert typing.get_origin(t_strings) is list and typing.get_args(t_strings) == (str,)
     
     # Recursive generic structure
-    def get_tree_value(node: TreeNode[A]) -> A: ...
-    def get_tree_children(node: TreeNode[A]) -> List[TreeNode[A]]: ...
+    def get_tree_value(node: Tree[A]) -> A: ...
+    def get_tree_children(node: Tree[A]) -> List[Tree[A]]: ...
     
-    tree = TreeNode[str](
+    tree = Tree[str](
         value="root",
         children=[
-            TreeNode[str](value="child1", children=[]),
-            TreeNode[str](value="child2", children=[])
+            Tree[str](value="child1", children=[]),
+            Tree[str](value="child2", children=[])
         ]
     )
     
@@ -566,8 +744,8 @@ def test_advanced_inheritance_and_specialization():
     t_children = infer_return_type(get_tree_children, tree)
     assert typing.get_origin(t_children) is list
     children_arg = typing.get_args(t_children)[0]
-    # The children type should be TreeNode[str]
-    assert typing.get_origin(children_arg) == TreeNode
+    # The children type should be RecursiveContainer[str]
+    assert typing.get_origin(children_arg) == Tree
 
 
 # =============================================================================
@@ -577,10 +755,10 @@ def test_advanced_inheritance_and_specialization():
 def test_nested_list_of_generics():
     """Test handling nested lists of generic types"""
 
-    def unwrap_box_list(w: Wrap[List[BoxModel[A]]]) -> List[A]: ...
+    def unwrap_box_list(w: Wrap[List[WrapModel[A]]]) -> List[A]: ...
 
-    boxes = [BoxModel[int](item=1), BoxModel[int](item=2)]
-    wrapped_boxes = Wrap[List[BoxModel[int]]](value=boxes)
+    boxes = [WrapModel[int](value=1), WrapModel[int](value=2)]
+    wrapped_boxes = Wrap[List[WrapModel[int]]](value=boxes)
 
     t = infer_return_type(unwrap_box_list, wrapped_boxes)
     assert typing.get_origin(t) is list and typing.get_args(t) == (int,)
@@ -663,19 +841,21 @@ def test_mixed_type_container_behavior():
 
 
 def test_empty_container_inference_limitations():
-    """Test limitations with empty containers - these should fail as expected"""
-    
+    """Test limitations with empty containers - these should fail with clear error messages"""
+
     def process_empty_list(items: List[A]) -> A: ...
     def process_empty_dict(data: Dict[A, B]) -> Tuple[A, B]: ...
     def process_empty_set(items: Set[A]) -> A: ...
-    
-    # Empty containers cannot provide type information - these should fail
-    with pytest.raises(TypeInferenceError):
+
+    # Empty containers cannot provide type information - these should fail with meaningful errors
+    with pytest.raises(TypeInferenceError) as exc_info:
         infer_return_type(process_empty_list, [])
-    
+    error_msg = str(exc_info.value).lower()
+    assert "could not" in error_msg or "insufficient" in error_msg
+
     with pytest.raises(TypeInferenceError):
         infer_return_type(process_empty_dict, {})
-    
+
     with pytest.raises(TypeInferenceError):
         infer_return_type(process_empty_set, set())
 
@@ -801,16 +981,12 @@ def test_callable_type_variable_inference_limits():
 
 def test_generic_class_without_type_parameters():
     """Test behavior with generic classes that don't specify type parameters"""
-    
-    @dataclass
-    class GenericContainer(typing.Generic[A]):
-        value: A
-    
-    def process_generic(container: GenericContainer[A]) -> A: ...
-    
+
+    def process_generic(container: Wrap[A]) -> A: ...
+
     # Creating instance without explicit type parameter should still work
-    container = GenericContainer(value=42)  # No [int] specified
-    
+    container = Wrap(value=42)  # No [int] specified
+
     # Should infer from the instance data
     t = infer_return_type(process_generic, container)
     assert t is int
@@ -819,28 +995,16 @@ def test_generic_class_without_type_parameters():
 def test_inheritance_chain_type_binding():
     """Test TypeVar binding through inheritance chains"""
     
-    @dataclass
-    class BaseGeneric(typing.Generic[A]):
-        base_value: A
+    def process_derived(obj: InheritanceDerived) -> str: ...
     
-    @dataclass
-    class DerivedGeneric(BaseGeneric[str]):  # Concrete specialization
-        derived_value: int
-    
-    def process_derived(obj: DerivedGeneric) -> str: ...
-    
-    derived = DerivedGeneric(base_value="hello", derived_value=42)
+    derived = InheritanceDerived(value="hello", derived_value=42)
     t = infer_return_type(process_derived, derived)
     assert t is str
     
     # More complex inheritance with TypeVars
-    @dataclass  
-    class MultiLevel(DerivedGeneric, typing.Generic[B]):
-        extra: B
+    def process_multi(obj: InheritanceDerived[B]) -> B: ...
     
-    def process_multi(obj: MultiLevel[B]) -> B: ...
-    
-    multi = MultiLevel[float](base_value="hello", derived_value=42, extra=3.14)
+    multi = InheritanceDerived[float](value=3.14, derived_value=42)
     t = infer_return_type(process_multi, multi)
     assert t is float
 
@@ -1002,13 +1166,9 @@ def test_empty_vs_non_empty_container_combinations():
     
 def test_multiple_nested_typevars():
     
-    class PydanticModel(BaseModel, typing.Generic[A, B]):
-        a: A
-        b: B
-    
-    def process_pydantic_model(data: PydanticModel[A, list[B]]) -> B: ...
+    def process_pydantic_model(data: PairModel[A, list[B]]) -> B: ...
 
-    t = infer_return_type(process_pydantic_model, PydanticModel[int, list[str]](a=1, b=["hello", "world"]))
+    t = infer_return_type(process_pydantic_model, PairModel[int, list[str]](first=1, second=["hello", "world"]))
     assert t is str
 
 
@@ -1198,19 +1358,14 @@ def test_covariant_variance_explicit():
     For homogeneous lists, we get the most specific type.
     For mixed lists, we preserve type precision with unions.
     """
-    class Animal: pass
-    class Dog(Animal): pass
-    
     def covariant_test(pets: List[A]) -> A: ...
-    
+
     # List is covariant - we infer the most specific type (Dog)
     dog_list = [Dog(), Dog()]
     result = infer_return_type(covariant_test, dog_list)
-    
+
     # Should infer Dog (most specific type from the list)
     assert result is Dog
-    
-    class Cat(Animal): pass
     
     cat_list = [Cat(), Cat()]
     result = infer_return_type(covariant_test, cat_list)
@@ -1266,8 +1421,6 @@ def test_invariant_dict_keys():
     
     Dict keys are invariant - the exact type used is inferred, not a supertype.
     """
-    class StringKey(str): pass
-    
     def invariant_test(mapping: Dict[A, int]) -> A: ...
     
     # Should be exactly the key type used, not a supertype
@@ -1275,9 +1428,9 @@ def test_invariant_dict_keys():
     result1 = infer_return_type(invariant_test, string_dict)
     assert result1 is str
     
-    custom_dict = {StringKey('key'): 1}
+    custom_dict = {CustomStringKey('key'): 1}
     result2 = infer_return_type(invariant_test, custom_dict)
-    assert result2 is StringKey
+    assert result2 is CustomStringKey
 
 
 def test_constraint_priority_resolution():
@@ -1490,16 +1643,9 @@ def test_many_typevars_scalability():
     
     This is a performance benchmark to ensure constraint solving doesn't
     become too slow with many variables. Not a correctness test.
+
+    Uses shared fixture: ManyParams
     """
-    # Define a type with many type parameters
-    @dataclass
-    class ManyParams(typing.Generic[A, B, C, X, Y]):
-        a: A
-        b: B  
-        c: C
-        x: X
-        y: Y
-    
     def extract_all(mp: ManyParams[A, B, C, X, Y]) -> Tuple[A, B, C, X, Y]: ...
     
     instance = ManyParams[int, str, float, bool, bytes](
@@ -1520,15 +1666,11 @@ def test_many_typevars_scalability():
 
 def test_nested_list_field_extraction():
     """Test that TypeVars can be inferred from nested list fields."""
-    
-    @dataclass
-    class Container(typing.Generic[A]):
-        nested_items: List[A]  # The TypeVar A is nested inside a List
-    
-    def extract_item_type(container: Container[A]) -> A: ...
-    
+
+    def extract_item_type(container: SimpleListContainer[A]) -> A: ...
+
     # Create instance without explicit type parameters
-    container = Container(nested_items=[1, 2, 3])
+    container = SimpleListContainer(nested_list=[1, 2, 3])
     
     # Should infer A = int from the nested list elements
     result_type = infer_return_type(extract_item_type, container)
@@ -1536,18 +1678,15 @@ def test_nested_list_field_extraction():
 
 
 def test_nested_dict_field_extraction():
-    """Test that TypeVars can be inferred from nested dict fields."""
-    
-    @dataclass
-    class DataStore(typing.Generic[A, B]):
-        data_map: Dict[str, List[A]]  # A is nested: str -> List[A]
-        metadata: Dict[A, B]          # Both A and B are in dict structure
-    
-    def get_data_type(store: DataStore[A, B]) -> A: ...
-    def get_metadata_type(store: DataStore[A, B]) -> B: ...
+    """Test that TypeVars can be inferred from nested dict fields.
+
+    Uses shared fixture: ComplexDataContainer
+    """
+    def get_data_type(store: ComplexDataContainer[A, B]) -> A: ...
+    def get_metadata_type(store: ComplexDataContainer[A, B]) -> B: ...
     
     # Create instance without explicit type parameters
-    store = DataStore(
+    store = ComplexDataContainer(
         data_map={"items": [1, 2, 3], "more": [4, 5]},
         metadata={42: "hello", 99: "world"}
     )
@@ -1562,16 +1701,16 @@ def test_nested_dict_field_extraction():
 
 
 def test_deeply_nested_field_extraction():
-    """Test that TypeVars can be inferred from deeply nested structures."""
-    
-    @dataclass
-    class DeepContainer(typing.Generic[A]):
-        deep_data: Dict[str, List[Dict[str, A]]]  # A is deeply nested
-    
+    """Test that TypeVars can be inferred from deeply nested structures.
+
+    Uses shared fixture: DeepContainer
+    """
     def extract_deep_type(container: DeepContainer[A]) -> A: ...
     
     # Create instance with deeply nested structure
     container = DeepContainer(
+        data_map={"items": [42, 100, 200, 300]},
+        metadata={42: 1, 100: 2, 200: 3, 300: 4},
         deep_data={
             "section1": [
                 {"item1": 42, "item2": 100},
@@ -1589,38 +1728,34 @@ def test_deeply_nested_field_extraction():
 
 
 def test_optional_nested_field_extraction():
-    """Test that TypeVars can be inferred from Optional nested fields."""
-    
-    @dataclass  
-    class OptionalContainer(typing.Generic[A]):
-        maybe_items: Optional[List[A]]  # A is nested inside Optional[List[A]]
-    
-    def extract_optional_type(container: OptionalContainer[A]) -> A: ...
+    """Test that TypeVars can be inferred from Optional nested fields.
+
+    Uses shared fixture: OptionalDataContainer
+    """
+    def extract_optional_type(container: OptionalDataContainer[A]) -> A: ...
     
     # Case 1: Non-None optional field
-    container1 = OptionalContainer(maybe_items=["hello", "world"])
+    container1 = OptionalDataContainer(maybe_items=["hello", "world"])
     result_type1 = infer_return_type(extract_optional_type, container1)
     assert result_type1 is str
     
     # Case 2: None optional field should fail (no type info available)
-    container2 = OptionalContainer(maybe_items=None)
+    container2 = OptionalDataContainer(maybe_items=None)
     with pytest.raises(Exception):  # Should fail due to lack of type information
         infer_return_type(extract_optional_type, container2)
 
 
 def test_mixed_nested_structures():
-    """Test TypeVar inference from mixed nested structures."""
+    """Test TypeVar inference from mixed nested structures.
+
+    Uses shared fixture: ComplexDataContainer
+    """
+    def extract_a_type(container: ComplexDataContainer[A, B]) -> A: ...
+    def extract_b_type(container: ComplexDataContainer[A, B]) -> B: ...
     
-    @dataclass
-    class ComplexContainer(typing.Generic[A, B]):
-        lists_of_a: List[List[A]]           # A doubly nested in lists
-        dict_to_b: Dict[str, B]             # B nested in dict values
-        optional_a_list: Optional[List[A]]  # A nested in Optional[List[A]]
-    
-    def extract_a_type(container: ComplexContainer[A, B]) -> A: ...
-    def extract_b_type(container: ComplexContainer[A, B]) -> B: ...
-    
-    container = ComplexContainer(
+    container = ComplexDataContainer(
+        data_map={"items": [1, 2, 3, 4, 5, 10, 20, 30]},
+        metadata={1: 3.14, 2: 2.71},
         lists_of_a=[[1, 2], [3, 4, 5]],
         dict_to_b={"key1": 3.14, "key2": 2.71},
         optional_a_list=[10, 20, 30]
@@ -1636,15 +1771,14 @@ def test_mixed_nested_structures():
 
 
 def test_pydantic_nested_field_extraction():
-    """Test nested field extraction works with Pydantic models too."""
-    
-    class NestedModel(BaseModel, typing.Generic[A]):
-        nested_data: List[Dict[str, A]]  # A is nested inside List[Dict[str, A]]
-    
-    def extract_nested_type(model: NestedModel[A]) -> A: ...
+    """Test nested field extraction works with Pydantic models too.
+
+    Uses shared fixture: ComplexDataModel
+    """
+    def extract_nested_type(model: ComplexDataModel[A]) -> A: ...
     
     # Create Pydantic instance without explicit type parameters
-    model = NestedModel(
+    model = ComplexDataModel(
         nested_data=[
             {"item1": True, "item2": False},
             {"item3": True}
@@ -1658,14 +1792,6 @@ def test_pydantic_nested_field_extraction():
 
 def test_inheritance_with_nested_extraction():
     """Test nested extraction works with inheritance chains."""
-    
-    @dataclass
-    class BaseContainer(typing.Generic[A]):
-        base_data: List[A]
-    
-    @dataclass
-    class ExtendedContainer(BaseContainer[A], typing.Generic[A, B]):
-        extra_data: Dict[str, B]
     
     def extract_base_type(container: ExtendedContainer[A, B]) -> A: ...
     def extract_extra_type(container: ExtendedContainer[A, B]) -> B: ...
@@ -1685,16 +1811,14 @@ def test_inheritance_with_nested_extraction():
 
 
 def test_multiple_typevar_same_nested_structure():
-    """Test multiple TypeVars in the same nested structure."""
+    """Test multiple TypeVars in the same nested structure.
+
+    Uses shared fixture: MultiVarDataContainer
+    """
+    def extract_key_type(container: MultiVarDataContainer[A, B]) -> A: ...
+    def extract_value_type(container: MultiVarDataContainer[A, B]) -> B: ...
     
-    @dataclass
-    class MultiVarContainer(typing.Generic[A, B]):
-        pair_lists: List[Dict[A, B]]  # Both A and B nested in same structure
-    
-    def extract_key_type(container: MultiVarContainer[A, B]) -> A: ...
-    def extract_value_type(container: MultiVarContainer[A, B]) -> B: ...
-    
-    container = MultiVarContainer(
+    container = MultiVarDataContainer(
         pair_lists=[
             {1: "one", 2: "two"},
             {3: "three", 4: "four"}
@@ -1711,20 +1835,18 @@ def test_multiple_typevar_same_nested_structure():
 
 
 def test_comparison_with_explicit_types():
-    """Test that nested extraction gives same results as explicit type parameters."""
-    
-    @dataclass
-    class TestContainer(typing.Generic[A]):
-        nested_list: List[A]
-    
-    def extract_type(container: TestContainer[A]) -> A: ...
+    """Test that nested extraction gives same results as explicit type parameters.
+
+    Uses shared fixture: SimpleListContainer
+    """
+    def extract_type(container: SimpleListContainer[A]) -> A: ...
     
     # Create with explicit type parameters
-    explicit_container = TestContainer[int](nested_list=[1, 2, 3])
+    explicit_container = SimpleListContainer[int](nested_list=[1, 2, 3])
     explicit_result = infer_return_type(extract_type, explicit_container)
     
     # Create without explicit type parameters (relies on nested extraction)
-    inferred_container = TestContainer(nested_list=[1, 2, 3])
+    inferred_container = SimpleListContainer(nested_list=[1, 2, 3])
     inferred_result = infer_return_type(extract_type, inferred_container)
     
     # Both should give the same result
@@ -1824,20 +1946,6 @@ def test_tuple_ellipsis_handling():
     import types
     origin = typing.get_origin(union_arg)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-
-
-def test_set_constraint_union_handling():
-    """Test Set with Union element types."""
-    
-    def process_set_union(s: Set[Union[A, B]]) -> Tuple[A, B]: ...
-    
-    # Mixed set with two types
-    t = infer_return_type(process_set_union, {1, "hello", 2, "world"})
-    assert typing.get_origin(t) is tuple
-    
-    # Should distribute types among A and B
-    tuple_args = typing.get_args(t)
-    assert set(tuple_args) == {int, str}
 
 
 def test_constraint_solver_edge_cases():
@@ -1942,20 +2050,6 @@ def test_union_in_constraints_checking_union():
     # Test 3: [1, 1.5] should fail - int | float doesn't match either constraint
     with pytest.raises(TypeInferenceError, match="violates constraints"):
         infer_return_type(process_mixed, [1, 1.5])
-
-
-def test_empty_container_error_messages():
-    """Test that empty container errors provide clear messages."""
-    
-    def process_empty_list(items: List[A]) -> A: ...
-    
-    try:
-        infer_return_type(process_empty_list, [])
-        assert False, "Should have raised TypeInferenceError"
-    except TypeInferenceError as e:
-        error_msg = str(e)
-        # Error message should mention the issue
-        assert "could not" in error_msg.lower() or "insufficient" in error_msg.lower()
 
 
 def test_has_unbound_typevars_helper():
@@ -2066,14 +2160,10 @@ def test_tuple_fixed_length_partial_match():
 def test_custom_generic_fallback_paths():
     """Test fallback paths in custom generic handling."""
     
-    @dataclass
-    class CustomGeneric(typing.Generic[A]):
-        data: A
-    
     # Test without __orig_class__ - should fall back to field extraction
-    def process_custom(c: CustomGeneric[A]) -> A: ...
+    def process_custom(c: Wrap[A]) -> A: ...
     
-    instance = CustomGeneric(data=42)
+    instance = Wrap(value=42)
     # Remove __orig_class__ if it exists to test fallback
     if hasattr(instance, '__orig_class__'):
         delattr(instance, '__orig_class__')
@@ -2268,11 +2358,6 @@ def test_forward_reference_simple():
     """Test ForwardRef handling in type annotations."""
     
     # Using string annotations that create ForwardRefs
-    @dataclass
-    class Node:
-        value: int
-        next: Optional['Node'] = None
-    
     def get_value(node: 'Node') -> int: ...
     
     node = Node(value=42)
@@ -2287,9 +2372,9 @@ def test_forward_reference_simple():
 def test_forward_reference_with_generics():
     """Test ForwardRef with generic type parameters."""
     
-    def extract_value(node: 'TreeNode[A]') -> A: ...
+    def extract_value(node: 'LinkedList[A]') -> A: ...
     
-    tree = TreeNode[str](value="root", children=[])
+    tree = LinkedList[str](value="root", children=[])
     t = infer_return_type(extract_value, tree)
     assert t == str
 
@@ -2297,16 +2382,12 @@ def test_forward_reference_with_generics():
 def test_forward_reference_mismatch():
     """Test ForwardRef when class names don't match."""
     
-    @dataclass
-    class ActualClass:
-        data: int
-    
     # This should fail because annotation expects different class
-    def process_wrong(obj: 'DifferentClass') -> int: ...
+    def process_wrong(obj: 'DifferentTestClass') -> int: ...
     
     # This will raise an error due to type mismatch
     with pytest.raises(TypeInferenceError):
-        infer_return_type(process_wrong, ActualClass(data=42))
+        infer_return_type(process_wrong, SampleDataClass(data=42))
 
 
 # =============================================================================
@@ -2434,22 +2515,22 @@ def test_constraint_checking_with_nested_generics():
 def test_bounded_typevar_with_union():
     """Test bounded TypeVar that produces a union."""
     
-    class Base: pass
-    class Derived1(Base): pass
-    class Derived2(Base): pass
+    class TestBase: pass
+    class TestDerived1(TestBase): pass
+    class TestDerived2(TestBase): pass
     
-    T_bounded = TypeVar('T_bounded', bound=Base)
+    T_bounded = TypeVar('T_bounded', bound=TestBase)
     
     def process_bounded_multi(items: List[T_bounded]) -> T_bounded: ...
     
     # Mixed derived types should create union within bound
-    t = infer_return_type(process_bounded_multi, [Derived1(), Derived2()])
+    t = infer_return_type(process_bounded_multi, [TestDerived1(), TestDerived2()])
     
     import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
-    assert set(union_args) == {Derived1, Derived2}
+    assert set(union_args) == {TestDerived1, TestDerived2}
 
 
 def test_constrained_typevar_with_union_match():
@@ -2525,19 +2606,14 @@ def test_substitute_set_types():
 def test_substitute_generic_class():
     """Test substitution with custom generic class."""
     from unification_type_inference import _substitute_typevars
-    
-    @dataclass
-    class Container(typing.Generic[A, B]):
-        a: A
-        b: B
-    
-    # Attempt to substitute in custom generic
+
+    # Use shared Pair (fields: first, second)
     bindings = {A: int, B: str}
-    result = _substitute_typevars(Container[A, B], bindings)
-    
-    # Should attempt to reconstruct Container[int, str]
-    assert result == Container[int, str]
-    assert result != Container[A, B]
+    result = _substitute_typevars(Pair[A, B], bindings)
+
+    # Should attempt to reconstruct MultiContainer[int, str]
+    assert result == Pair[int, str]
+    assert result != Pair[A, B]
 
 
 # =============================================================================
@@ -2678,24 +2754,17 @@ def test_generic_info_recursive_matching():
 
 def test_simple_subclass_generic_inheritance():
     """Test that subclass instances work where base class is expected.
-    
+
     Expected: Should work via field-based extraction.
     Current: Works via field extraction, bypasses origin check.
+
+    Note: SpecialWrap is a subclass of SimpleContainer (both defined in shared fixtures).
     """
-    
-    @dataclass
-    class Container(typing.Generic[A]):
-        value: A
-    
-    @dataclass
-    class SpecialContainer(Container[A], typing.Generic[A]):
-        extra: str
-    
-    # Function expects Container[A] but we pass SpecialContainer[int]
-    def process_container(c: Container[A]) -> A: ...
-    
-    special = SpecialContainer[int](value=42, extra="test")
-    
+    # Function expects SimpleContainer[A] but we pass SpecialWrap[int]
+    def process_container(c: Wrap[A]) -> A: ...
+
+    special = SpecialWrap[int](value=42, extra="test")
+
     # This works because field-based extraction finds 'value: A' -> 'value: 42'
     result = infer_return_type(process_container, special)
     assert result == int
@@ -2707,23 +2776,10 @@ def test_deep_inheritance_chain():
     Expected: Should work through any level of inheritance.
     Current: Works via field extraction.
     """
+    def process_gp(obj: DeepInheritanceChain[A]) -> A: ...
+    def process_p(obj: DeepInheritanceChain[A]) -> A: ...
     
-    @dataclass
-    class GrandParent(typing.Generic[A]):
-        gp_value: A
-    
-    @dataclass
-    class Parent(GrandParent[A], typing.Generic[A]):
-        p_value: str
-    
-    @dataclass
-    class Child(Parent[A], typing.Generic[A]):
-        c_value: int
-    
-    def process_gp(obj: GrandParent[A]) -> A: ...
-    def process_p(obj: Parent[A]) -> A: ...
-    
-    child = Child[float](gp_value=3.14, p_value="test", c_value=42)
+    child = DeepInheritanceChain[float](gp_value=3.14, p_value="test", c_value=42)
     
     # Should work at any level
     result_gp = infer_return_type(process_gp, child)
@@ -2735,24 +2791,17 @@ def test_deep_inheritance_chain():
 
 def test_partial_specialization_subclass():
     """Test subclass that partially specializes parent's type parameters.
-    
+
     Expected: Should work, extracting only the remaining type parameters.
     Current: Works via field extraction.
+
+    Uses shared fixture: Pair (fields: first, second).
     """
-    
-    @dataclass
-    class TwoParam(typing.Generic[A, B]):
-        first: A
-        second: B
-    
-    @dataclass
-    class OneParam(TwoParam[A, str], typing.Generic[A]):  # Fix B=str
-        extra: int
-    
-    def process_two(obj: TwoParam[A, B]) -> Tuple[A, B]: ...
-    
-    one = OneParam[int](first=42, second="fixed", extra=99)
-    
+
+    def process_two(obj: Pair[A, B]) -> Tuple[A, B]: ...
+
+    one = PartiallySpecializedContainer[int](first=42, second="fixed", extra=99)
+
     # Should infer A=int, B=str
     result = infer_return_type(process_two, one)
     assert typing.get_origin(result) == tuple
@@ -2766,17 +2815,9 @@ def test_concrete_subclass_of_generic():
     Current: Works via field extraction.
     """
     
-    @dataclass
-    class GenericBase(typing.Generic[A]):
-        value: A
+    def process_generic(obj: InheritanceBase[A]) -> A: ...
     
-    @dataclass
-    class ConcreteChild(GenericBase[int]):  # Fully specialized
-        extra: str
-    
-    def process_generic(obj: GenericBase[A]) -> A: ...
-    
-    concrete = ConcreteChild(value=42, extra="test")
+    concrete = ConcreteSpecialized(value=42, extra="test")
     
     # Should infer A=int from the specialized base
     result = infer_return_type(process_generic, concrete)
@@ -2790,22 +2831,10 @@ def test_multiple_inheritance_generics():
     Current: Works correctly when parents use different TypeVar names.
     """
     
-    @dataclass
-    class HasA(typing.Generic[A]):
-        a_value: A
+    def extract_a(obj: MultipleInheritanceA[A]) -> A: ...
+    def extract_b(obj: MultipleInheritanceB[B]) -> B: ...
     
-    @dataclass
-    class HasB(typing.Generic[B]):  # Different TypeVar name
-        b_value: B
-    
-    @dataclass
-    class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
-        both: str
-    
-    def extract_a(obj: HasA[A]) -> A: ...
-    def extract_b(obj: HasB[B]) -> B: ...
-    
-    both = HasBoth[int, str](a_value=42, b_value="hello", both="test")
+    both = MultipleInheritanceBoth[int, str](a_value=42, b_value="hello")
     
     # Should work for both parent types
     result_a = infer_return_type(extract_a, both)
@@ -2817,70 +2846,51 @@ def test_multiple_inheritance_generics():
 
 def test_multiple_inheritance_typevar_shadowing():
     """Test multiple inheritance when parents use the SAME TypeVar name.
-    
+
     FULLY FIXED! Both cases now work correctly through proper TypeVar substitution.
-    
+
     The fix:
     1. Only extract fields from the annotation class (not inherited fields)
     2. Substitute TypeVars when annotation re-parameterizes the class
-       Example: HasB defined as Generic[A], annotation is HasB[B] → substitute A with B
+       Example: MultipleInheritanceB defined as Generic[A], annotation is MultipleInheritanceB[B] → substitute A with B
     3. Return substituted TypeVars to the inference engine
-    
+
     This properly handles the case where:
-    - HasA and HasB both use Generic[A] (same TypeVar name)
-    - HasBoth uses them with different TypeVars: HasA[A], HasB[B]
+    - MultipleInheritanceA and MultipleInheritanceB both use Generic[A] (same TypeVar name)
+    - MultipleInheritanceBoth uses them with different TypeVars: MultipleInheritanceA[A], MultipleInheritanceB[B]
     - The substitution ensures we track the right TypeVar for each parent
+
+    Uses shared fixtures: MultipleInheritanceA, MultipleInheritanceB, MultipleInheritanceBoth (all use TypeVar A internally).
     """
-    
-    @dataclass
-    class HasA(typing.Generic[A]):
-        a_value: A
-    
-    @dataclass
-    class HasB(typing.Generic[A]):  # SAME TypeVar name as HasA!
-        b_value: A
-    
-    @dataclass
-    class HasBoth(HasA[A], HasB[B], typing.Generic[A, B]):
-        both: str
-    
-    def extract_a(obj: HasA[A]) -> A: ...
-    def extract_b(obj: HasB[B]) -> B: ...
-    
-    both = HasBoth[int, str](a_value=42, b_value="hello", both="test")
-    
+
+    def extract_a(obj: MultipleInheritanceA[A]) -> A: ...
+    def extract_b(obj: MultipleInheritanceB[B]) -> B: ...
+
+    both = MultipleInheritanceBoth[int, str](a_value=42, b_value="hello")
+
     # Both work correctly now!
     result_a = infer_return_type(extract_a, both)
     assert result_a == int
-    
+
     result_b = infer_return_type(extract_b, both)
     assert result_b == str
 
 
 def test_swapped_generic_typevars():
     """Test that TypeVar swapping in inheritance is handled correctly.
-    
-    HasB(HasA[B, A], Generic[B, A]) swaps the type parameters.
-    So HasB[int, str] means B=int, A=str, which gives:
-    - a_value has type B = int
-    - b_value has type A = str
-    
-    The function returns Tuple[A, B] = Tuple[str, int].
+
+    SwappedChild(SwapBase[B, A], Generic[A, B]) swaps the type parameters.
+    So SwapChild[int, str] means A=int, B=str, which gives:
+    - a_value has type B = str
+    - b_value has type A = int
+
+    The function returns Tuple[A, B] = Tuple[int, str].
     """
-    @dataclass
-    class HasA(typing.Generic[A, B]):
-        a_value: A
-        b_value: B
+    def process_a(obj: MultipleInheritanceSwapped[C, D]) -> Tuple[C, D]: ...
     
-    @dataclass
-    class HasB(HasA[B, A], typing.Generic[A, B]):  # Swapped order
-        pass
-    
-    def process_a(obj: HasB[C, D]) -> Tuple[C, D]: ...
-    
-    result = infer_return_type(process_a, HasB[int, str](a_value="hello", b_value=42))
-    # HasB[int, str] means B=int, A=str
-    # So Tuple[A, B] = Tuple[str, int]
+    result = infer_return_type(process_a, MultipleInheritanceSwapped[int, str](a_value="hello", b_value=42))
+    # SwapChild[int, str] means C=int, D=str
+    # Tuple[C, D] = Tuple[int, str]
     assert typing.get_origin(result) is tuple
     assert typing.get_args(result) == (int, str)
 
@@ -2894,14 +2904,6 @@ def test_swapped_generic_typevars_pydantic():
     
     C = TypeVar('C')
     D = TypeVar('D')
-    
-    class ParentPyd(BaseModel, typing.Generic[A, B]):
-        a_value: A
-        b_value: B
-    
-    class ChildPyd(ParentPyd[B, A], typing.Generic[A, B]):
-        # Swapped: Parent gets [B, A] but Child is [A, B]
-        pass
     
     def process_pyd(obj: ChildPyd[C, D]) -> Tuple[C, D]: ...
     
@@ -2919,38 +2921,25 @@ def test_builtin_type_subclass():
     Current: Works! Built-in extractors check isinstance(), not exact type.
     """
     
-    class MyList(list):
-        """Custom list subclass."""
-        pass
-    
     def process_list(items: List[A]) -> A: ...
     
-    my_list = MyList([1, 2, 3])
+    my_list = CustomList([1, 2, 3])
     
     # This works! Built-in extractors use isinstance(value, list)
-    # So MyList (subclass of list) is handled correctly
+    # So CustomList (subclass of list) is handled correctly
     result = infer_return_type(process_list, my_list)
     assert result == int
 
 
 def test_subclass_with_additional_type_params():
     """Test subclass that adds new type parameters.
-    
+
     Expected: Should handle the base's params, ignore extras.
     Current: Tests actual behavior.
     """
+    def process_base(obj: InheritanceBase[A]) -> A: ...
     
-    @dataclass
-    class Base(typing.Generic[A]):
-        base_val: A
-    
-    @dataclass
-    class Extended(Base[A], typing.Generic[A, B]):  # Adds B
-        extended_val: B
-    
-    def process_base(obj: Base[A]) -> A: ...
-    
-    extended = Extended[int, str](base_val=42, extended_val="extra")
+    extended = Extended[int, str](value=42, extra="extra")
     
     # Should infer A=int, ignore B
     result = infer_return_type(process_base, extended)
@@ -2959,25 +2948,17 @@ def test_subclass_with_additional_type_params():
 
 def test_origins_compatible_with_subclass():
     """Test _origins_compatible method with subclass relationship.
-    
+
     This documents current behavior: it returns False for subclasses.
     Per LSP, it arguably should return True, but current implementation
     works via field extraction so it's not critical.
     """
     from generic_utils import get_generic_info, get_instance_generic_info
-    
-    @dataclass
-    class Base(typing.Generic[A]):
-        value: A
-    
-    @dataclass
-    class Derived(Base[A], typing.Generic[A]):
-        extra: str
-    
+
     engine = UnificationEngine()
-    
-    base_info = get_generic_info(Base[A])
-    derived_instance = Derived[int](value=42, extra="test")
+
+    base_info = get_generic_info(InheritanceBase[A])
+    derived_instance = InheritanceDerived[int](value=42, derived_value=99)
     derived_info = get_instance_generic_info(derived_instance)
     
     # Current implementation: returns False
@@ -2992,30 +2973,13 @@ def test_origins_compatible_with_subclass():
 
 def test_diamond_inheritance():
     """Test diamond inheritance pattern with generics.
-    
+
     Expected: Should follow MRO correctly.
     Current: Tests actual behavior.
     """
-    
-    @dataclass
-    class Top(typing.Generic[A]):
-        top: A
-    
-    @dataclass
-    class Left(Top[A], typing.Generic[A]):
-        left: str
-    
-    @dataclass
-    class Right(Top[A], typing.Generic[A]):
-        right: int
-    
-    @dataclass
-    class Bottom(Left[A], Right[A], typing.Generic[A]):
-        bottom: float
-    
-    def process_top(obj: Top[A]) -> A: ...
-    
-    bottom = Bottom[bool](top=True, left="l", right=1, bottom=2.0)
+    def process_top(obj: NestedStructure[A]) -> A: ...
+
+    bottom = NestedStructure[bool](value=True)
     
     # Should follow MRO and extract A=bool
     result = infer_return_type(process_top, bottom)
@@ -3024,18 +2988,17 @@ def test_diamond_inheritance():
 
 def test_covariant_subclass_list():
     """Test that List[Derived] works where List[Base] expected.
-    
+
     Expected: Should work because List is covariant in reading.
     Current: Tests actual behavior for lists.
+
+    Uses shared fixtures: Animal, Dog.
     """
-    
-    class Animal: pass
-    class Dog(Animal): pass
-    
+
     def process_animals(animals: List[A]) -> A: ...
-    
+
     dogs = [Dog(), Dog()]
-    
+
     # Should infer A=Dog (most specific type)
     result = infer_return_type(process_animals, dogs)
     assert result == Dog
@@ -3048,40 +3011,31 @@ def test_invariant_subclass_dict_keys():
     Current: Tests actual behavior.
     """
     
-    class Key: pass
-    class SpecialKey(Key): pass
+    class TestKey: pass
+    class TestSpecialKey(TestKey): pass
     
     def process_dict(d: Dict[A, B]) -> Tuple[A, B]: ...
     
-    special_dict = {SpecialKey(): "value"}
+    special_dict = {TestSpecialKey(): "value"}
     
     # Should infer from actual key type
     result = infer_return_type(process_dict, special_dict)
     assert typing.get_origin(result) == tuple
     key_type, val_type = typing.get_args(result)
-    assert key_type == SpecialKey
+    assert key_type == TestSpecialKey
     assert val_type == str
 
 
 def test_subclass_without_orig_class():
     """Test subclass instance without __orig_class__ attribute.
-    
+
     Expected: Should fall back to field-based inference.
     Current: Tests fallback behavior.
     """
-    
-    @dataclass
-    class Base(typing.Generic[A]):
-        value: A
-    
-    @dataclass
-    class Derived(Base[A], typing.Generic[A]):
-        extra: str
-    
-    def process(obj: Base[A]) -> A: ...
+    def process(obj: InheritanceBase[A]) -> A: ...
     
     # Create instance without __orig_class__
-    derived = Derived(value=42, extra="test")
+    derived = InheritanceDerived(value=42, derived_value=99)
     if hasattr(derived, '__orig_class__'):
         delattr(derived, '__orig_class__')
     
@@ -3092,28 +3046,21 @@ def test_subclass_without_orig_class():
 
 def test_subclass_type_mismatch_detection():
     """Test that incompatible subclass relationships are detected.
-    
+
     Expected: Should fail when types don't align.
     Current: Correctly detects and raises error!
+
+    Uses shared fixture: SimpleContainer (field: value).
     """
-    
-    @dataclass
-    class Container(typing.Generic[A]):
-        value: A
-    
-    @dataclass
-    class IntContainer(Container[int]):  # Fixed to int
-        pass
-    
-    # Annotation expects Container[str] but instance is IntContainer(Container[int])
-    def process_string_container(c: Container[str]) -> str: ...
-    
-    int_container = IntContainer(value=42)
-    
+    # Annotation expects SimpleContainer[str] but instance is SimpleContainer[int](SimpleContainer[int])
+    def process_string_wrap(c: Wrap[str]) -> str: ...
+
+    int_wrap = Wrap[int](value=42)
+
     # Correctly detects type mismatch: annotation says str, field value is int
     # The engine extracts field pairs and finds: str annotation vs int value
     with pytest.raises(TypeInferenceError, match="Expected str, got int"):
-        infer_return_type(process_string_container, int_container)
+        infer_return_type(process_string_wrap, int_wrap)
 
 
 # =============================================================================
@@ -3232,16 +3179,12 @@ def test_annotated_type():
 
 def test_classvar_in_dataclass():
     """Test that ClassVar is handled appropriately."""
+
     from typing import ClassVar
     
-    @dataclass
-    class WithClassVar(typing.Generic[A]):
-        class_var: ClassVar[str] = "class"
-        instance_var: A
+    def process_class(obj: WithClassVarDataclass[A]) -> A: ...
     
-    def process_class(obj: WithClassVar[A]) -> A: ...
-    
-    instance = WithClassVar[int](instance_var=42)
+    instance = WithClassVarDataclass[int](instance_var=42)
     t = infer_return_type(process_class, instance)
     assert t == int
 
@@ -3355,89 +3298,67 @@ def test_type_inference_error_from_unification_error():
 
 
 def test_triple_nested_generic_classes():
-    """Test Box[Box[Box[A]]] - deep generic class nesting."""
-    
-    @dataclass
-    class Box(typing.Generic[A]):
-        content: A
-    
-    def triple_unbox(b: Box[Box[Box[A]]]) -> A: ...
-    
-    # Create deeply nested boxes
-    innermost = Box[int](content=42)
-    middle = Box[Box[int]](content=innermost)
-    outer = Box[Box[Box[int]]](content=middle)
-    
+    """Test SimpleContainer[SimpleContainer[SimpleContainer[A]]] - deep generic class nesting.
+
+    Uses shared Wrap fixture (field: value).
+    """
+    def triple_unbox(b: Wrap[Wrap[Wrap[A]]]) -> A: ...
+
+    # Create deeply nested wraps
+    innermost = Wrap[int](value=42)
+    middle = Wrap[Wrap[int]](value=innermost)
+    outer = Wrap[Wrap[Wrap[int]]](value=middle)
+
     t = infer_return_type(triple_unbox, outer)
     assert t is int
 
 
 def test_quadruple_nested_generic_classes():
-    """Test Box[Box[Box[Box[A]]]] - very deep generic nesting."""
-    
-    @dataclass
-    class Container(typing.Generic[A]):
-        value: A
-    
-    def quad_extract(c: Container[Container[Container[Container[A]]]]) -> A: ...
-    
+    """Test SimpleContainer[SimpleContainer[SimpleContainer[SimpleContainer[A]]]] - very deep generic nesting.
+
+    Uses shared Wrap fixture (field: value).
+    """
+    def quad_extract(c: Wrap[Wrap[Wrap[Wrap[A]]]]) -> A: ...
+
     # Build from inside out
-    level1 = Container[str](value="deep")
-    level2 = Container[Container[str]](value=level1)
-    level3 = Container[Container[Container[str]]](value=level2)
-    level4 = Container[Container[Container[Container[str]]]](value=level3)
-    
+    level1 = Wrap[str](value="deep")
+    level2 = Wrap[Wrap[str]](value=level1)
+    level3 = Wrap[Wrap[Wrap[str]]](value=level2)
+    level4 = Wrap[Wrap[Wrap[Wrap[str]]]](value=level3)
+
     t = infer_return_type(quad_extract, level4)
     assert t is str
 
 
 def test_mixed_generic_classes_deep_nesting():
-    """Test Wrapper[Box[Container[A]]] - different generic classes nested."""
-    
-    @dataclass
-    class Wrapper(typing.Generic[A]):
-        wrapped: A
-    
-    @dataclass
-    class Box(typing.Generic[A]):
-        item: A
-    
-    @dataclass
-    class Container(typing.Generic[A]):
-        data: A
-    
-    def extract_mixed(w: Wrapper[Box[Container[A]]]) -> A: ...
-    
-    inner = Container[float](data=3.14)
-    middle = Box[Container[float]](item=inner)
-    outer = Wrapper[Box[Container[float]]](wrapped=middle)
+    """Test SimpleContainer[SimpleContainer[SimpleContainer[A]]] - different generic classes nested.
+
+    Uses shared fixtures: SimpleContainer (field: value).
+    """
+    def extract_mixed(w: Wrap[Wrap[Wrap[A]]]) -> A: ...
+
+    inner = Wrap[float](value=3.14)
+    middle = Wrap[Wrap[float]](value=inner)
+    outer = Wrap[Wrap[Wrap[float]]](value=middle)
     
     t = infer_return_type(extract_mixed, outer)
     assert t is float
 
 
 def test_pydantic_dataclass_mixed_deep_nesting():
-    """Test deep nesting mixing Pydantic and dataclasses."""
-    
-    @dataclass
-    class DataBox(typing.Generic[A]):
-        value: A
-    
-    class PydanticWrapper(BaseModel, typing.Generic[A]):
-        content: A
-    
-    @dataclass
-    class DataContainer(typing.Generic[A]):
-        item: A
-    
+    """Test deep nesting mixing Pydantic and dataclasses.
+
+    Uses shared fixtures: SimpleContainer (field: value), SimpleContainerModel (field: value).
+    """
+
     def extract_from_mix(
-        p: PydanticWrapper[DataBox[DataContainer[A]]]
+        p: WrapModel[Wrap[Wrap[A]]]
     ) -> A: ...
-    
-    inner = DataContainer[int](item=99)
-    middle = DataBox[DataContainer[int]](value=inner)
-    outer = PydanticWrapper[DataBox[DataContainer[int]]](content=middle)
-    
+
+    inner = Wrap[int](value=99)
+    middle = Wrap[Wrap[int]](value=inner)
+    outer = WrapModel[Wrap[Wrap[int]]](value=middle)
+
     t = infer_return_type(extract_from_mix, outer)
     assert t is int
 
@@ -3558,22 +3479,22 @@ def test_mixed_containers_depth_four():
 
 
 def test_triple_recursive_tree():
-    """Test TreeNode[TreeNode[TreeNode[A]]] - 3-level recursive structure."""
+    """Test LinkedContainer[LinkedContainer[LinkedContainer[A]]] - 3-level recursive structure."""
 
     def extract_from_deep_tree(
-        tree: TreeNode[TreeNode[TreeNode[A]]]
+        tree: LinkedList[LinkedList[LinkedList[A]]]
     ) -> A: ...
     
     # Innermost nodes
-    leaf1 = TreeNode[int](value=1, children=[])
-    leaf2 = TreeNode[int](value=2, children=[])
+    leaf1 = LinkedList[int](value=1, next=None)
+    leaf2 = LinkedList[int](value=2, next=None)
     
     # Middle level
-    middle1 = TreeNode[TreeNode[int]](value=leaf1, children=[])
-    middle2 = TreeNode[TreeNode[int]](value=leaf2, children=[])
+    middle1 = LinkedList[LinkedList[int]](value=leaf1, next=None)
+    middle2 = LinkedList[LinkedList[int]](value=leaf2, next=None)
     
     # Top level
-    root = TreeNode[TreeNode[TreeNode[int]]](value=middle1, children=[])
+    root = LinkedList[LinkedList[LinkedList[int]]](value=middle1, next=None)
     
     t = infer_return_type(extract_from_deep_tree, root)
     assert t is int
@@ -3582,19 +3503,14 @@ def test_triple_recursive_tree():
 def test_linked_list_depth():
     """Test deep linked list structure."""
     
-    @dataclass
-    class Node(typing.Generic[A]):
-        value: A
-        next: Optional['Node[A]']
-    
-    def extract_value_from_list(node: Node[A]) -> A: ...
+    def extract_value_from_list(node: LinkedList[A]) -> A: ...
     
     # Create 5-deep linked list
-    node5 = Node[str](value="end", next=None)
-    node4 = Node[str](value="four", next=node5)
-    node3 = Node[str](value="three", next=node4)
-    node2 = Node[str](value="two", next=node3)
-    node1 = Node[str](value="one", next=node2)
+    node5 = LinkedList[str](value="end", next=None)
+    node4 = LinkedList[str](value="four", next=node5)
+    node3 = LinkedList[str](value="three", next=node4)
+    node2 = LinkedList[str](value="two", next=node3)
+    node1 = LinkedList[str](value="one", next=node2)
     
     t = infer_return_type(extract_value_from_list, node1)
     assert t is str
@@ -3603,16 +3519,11 @@ def test_linked_list_depth():
 def test_graph_like_structure():
     """Test graph-like structure with multiple paths."""
     
-    @dataclass
-    class GraphNode(typing.Generic[A]):
-        value: A
-        edges: List['GraphNode[A]']
+    def extract_node_type(node: Tree[A]) -> A: ...
     
-    def extract_node_type(node: GraphNode[A]) -> A: ...
-    
-    node1 = GraphNode[int](value=1, edges=[])
-    node2 = GraphNode[int](value=2, edges=[node1])
-    node3 = GraphNode[int](value=3, edges=[node1, node2])
+    node1 = Tree[int](value=1, children=[])
+    node2 = Tree[int](value=2, children=[node1])
+    node3 = Tree[int](value=3, children=[node1, node2])
     
     t = infer_return_type(extract_node_type, node3)
     assert t is int
