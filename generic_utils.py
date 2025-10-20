@@ -22,8 +22,7 @@ from abc import ABC, abstractmethod
 
 def is_union_type(origin: Any) -> bool:
     """Check if origin represents a Union type (handles both typing.Union and types.UnionType)."""
-    union_type = getattr(types, 'UnionType', None)
-    return origin is Union or (union_type and origin is union_type)
+    return origin is Union or origin is types.UnionType
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -380,8 +379,7 @@ class UnionExtractor(GenericExtractor):
 
     def can_handle_annotation(self, annotation: Any) -> bool:
         origin = get_origin(annotation)
-        union_type = getattr(types, "UnionType", None)
-        return origin is Union or (union_type and origin is union_type)
+        return origin is Union or origin is types.UnionType
 
     def can_handle_instance(self, instance: Any) -> bool:
         return False  # Instances don't have Union types directly
@@ -698,6 +696,23 @@ def create_union_if_needed(types_set: set) -> Any:
             return Union[tuple(types_set)]
     else:
         return type(None)
+
+
+def create_generic_info_union_if_needed(generic_info_set: set) -> GenericInfo:
+    """Create a GenericInfo Union type if needed, or return single GenericInfo.
+    
+    Works entirely within GenericInfo objects without resolving to actual types.
+    """
+    if len(generic_info_set) == 1:
+        return list(generic_info_set)[0]
+    elif len(generic_info_set) > 1:
+        # Create a Union GenericInfo with all the GenericInfo objects as concrete_args
+        union_origin = Union
+        concrete_args = list(generic_info_set)
+        return GenericInfo(origin=union_origin, concrete_args=concrete_args)
+    else:
+        # Empty set - return GenericInfo for NoneType
+        return GenericInfo(origin=type(None))
 
 
 # Global instance for convenience

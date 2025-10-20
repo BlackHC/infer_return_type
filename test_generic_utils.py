@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from generic_utils import (
     BuiltinExtractor, DataclassExtractor, GenericTypeUtils, PydanticExtractor, UnionExtractor,
-    create_union_if_needed, get_annotation_value_pairs, get_generic_info, get_instance_generic_info
+    create_union_if_needed, create_generic_info_union_if_needed, get_annotation_value_pairs, get_generic_info, get_instance_generic_info
 )
 
 # Test TypeVars
@@ -1636,5 +1636,90 @@ class TestCreateUnionEdgeCases:
         # Should still create a valid union
         origin = get_origin(result)
         assert _is_union_origin(origin)
+
+
+class TestCreateGenericInfoUnion:
+    """Test create_generic_info_union_if_needed function."""
+    
+    def test_create_generic_info_union_empty_set(self):
+        """Test create_generic_info_union_if_needed with empty set returns NoneType GenericInfo."""
+        result = create_generic_info_union_if_needed(set())
+        assert result.origin is type(None)
+        assert not result.is_generic
+    
+    def test_create_generic_info_union_single_generic_info(self):
+        """Test create_generic_info_union_if_needed with single GenericInfo returns that GenericInfo."""
+        single_info = get_generic_info(int)
+        result = create_generic_info_union_if_needed({single_info})
+        assert result is single_info
+    
+    def test_create_generic_info_union_multiple_generic_infos(self):
+        """Test create_generic_info_union_if_needed with multiple GenericInfos creates Union GenericInfo."""
+        int_info = get_generic_info(int)
+        str_info = get_generic_info(str)
+        float_info = get_generic_info(float)
+        
+        result = create_generic_info_union_if_needed({int_info, str_info, float_info})
+        
+        # Should be a Union GenericInfo
+        assert result.origin is Union
+        assert result.is_generic
+        assert len(result.concrete_args) == 3
+        
+        # Check that all original GenericInfos are preserved as concrete_args
+        concrete_args_origins = {arg.origin for arg in result.concrete_args}
+        assert concrete_args_origins == {int, str, float}
+    
+    def test_create_generic_info_union_with_complex_types(self):
+        """Test create_generic_info_union_if_needed with complex GenericInfo types."""
+        list_int_info = get_generic_info(list[int])
+        dict_str_int_info = get_generic_info(dict[str, int])
+        
+        result = create_generic_info_union_if_needed({list_int_info, dict_str_int_info})
+        
+        # Should be a Union GenericInfo
+        assert result.origin is Union
+        assert result.is_generic
+        assert len(result.concrete_args) == 2
+        
+        # Check that the complex GenericInfos are preserved
+        concrete_args_origins = {arg.origin for arg in result.concrete_args}
+        assert concrete_args_origins == {list, dict}
+        
+        # Verify the nested structure is preserved
+        for arg in result.concrete_args:
+            if arg.origin is list:
+                assert len(arg.concrete_args) == 1
+                assert arg.concrete_args[0].origin is int
+            elif arg.origin is dict:
+                assert len(arg.concrete_args) == 2
+                assert arg.concrete_args[0].origin is str
+                assert arg.concrete_args[1].origin is int
+    
+    def test_create_generic_info_union_preserves_structure(self):
+        """Test that create_generic_info_union_if_needed preserves GenericInfo structure without resolving."""
+        # Create nested GenericInfo structures
+        inner_info = get_generic_info(list[str])
+        outer_info = get_generic_info(dict[int, list[str]])
+        
+        result = create_generic_info_union_if_needed({inner_info, outer_info})
+        
+        # Verify the Union GenericInfo structure
+        assert result.origin is Union
+        assert len(result.concrete_args) == 2
+        
+        # Find the dict GenericInfo and verify its nested structure is preserved
+        dict_info = None
+        for arg in result.concrete_args:
+            if arg.origin is dict:
+                dict_info = arg
+                break
+        
+        assert dict_info is not None
+        assert len(dict_info.concrete_args) == 2
+        assert dict_info.concrete_args[0].origin is int
+        assert dict_info.concrete_args[1].origin is list
+        assert len(dict_info.concrete_args[1].concrete_args) == 1
+        assert dict_info.concrete_args[1].concrete_args[0].origin is str
 
 
