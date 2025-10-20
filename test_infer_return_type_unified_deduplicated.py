@@ -27,7 +27,6 @@ from unification_type_inference import (
     _has_unbound_typevars_in_generic_info,
     _infer_type_from_value,
     _is_subtype,
-    _substitute_typevars_in_generic_info,
     infer_return_type_unified as infer_return_type,
 )
 
@@ -932,18 +931,18 @@ def test_helper_functions():
     assert _has_unbound_typevars_in_generic_info(get_generic_info(Dict[A, int])) == True
     assert _has_unbound_typevars_in_generic_info(get_generic_info(Dict[str, int])) == False
     
-    # _substitute_typevars_in_generic_info
-    bindings = {B: get_generic_info(int)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(A), bindings)
-    assert result.resolved_type == A  # A is not in bindings
+    # Substitution.apply
+    substitution = Substitution({B: get_generic_info(int)})
+    result = substitution.apply(A)
+    assert result == A  # A is not in bindings
     
-    bindings = {A: get_generic_info(int)}
+    substitution = Substitution({A: get_generic_info(int)})
     union_type = Union[A, B, str]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
-    origin = typing.get_origin(result.resolved_type)
+    origin = typing.get_origin(result)
     if origin is Union or origin is getattr(types, 'UnionType', None):
-        args = typing.get_args(result.resolved_type)
+        args = typing.get_args(result)
         assert int in args
         assert str in args
     
@@ -1163,47 +1162,47 @@ def test_substitution_and_type_reconstruction():
     """Test type substitution and reconstruction edge cases."""
     
     # Test substituting in dict type
-    bindings = {K: get_generic_info(str), V: get_generic_info(int)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Dict[K, V]), bindings)
+    substitution = Substitution({K: get_generic_info(str), V: get_generic_info(int)})
+    result = substitution.apply(Dict[K, V])
     
-    assert typing.get_origin(result.resolved_type) == dict
-    key_type, val_type = typing.get_args(result.resolved_type)
+    assert typing.get_origin(result) == dict
+    key_type, val_type = typing.get_args(result)
     assert key_type == str
     assert val_type == int
     
     # Fixed-length tuple substitution
-    bindings = {A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Tuple[A, B, C]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)})
+    result = substitution.apply(Tuple[A, B, C])
     
-    assert typing.get_origin(result.resolved_type) == tuple
-    args = typing.get_args(result.resolved_type)
+    assert typing.get_origin(result) == tuple
+    args = typing.get_args(result)
     assert args == (int, str, float)
     
     # Set type substitution
-    bindings = {A: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Set[A]), bindings)
+    substitution = Substitution({A: get_generic_info(str)})
+    result = substitution.apply(Set[A])
     
-    assert typing.get_origin(result.resolved_type) == set
-    assert typing.get_args(result.resolved_type) == (str,)
+    assert typing.get_origin(result) == set
+    assert typing.get_args(result) == (str,)
     
     # Custom generic class substitution
     
-    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(GenericPair[A, B]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str)})
+    result = substitution.apply(GenericPair[A, B])
     
     # Should attempt to reconstruct GenericPair[int, str]
-    assert result.resolved_type == GenericPair[int, str]
-    assert result.resolved_type != GenericPair[A, B]
+    assert result == GenericPair[int, str]
+    assert result != GenericPair[A, B]
     
     # Union substitution with mixed bound/unbound TypeVars
-    bindings = {A: get_generic_info(int)}
+    substitution = Substitution({A: get_generic_info(int)})
     union_type = Union[A, B, str]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Should only include bound args (int and str), not B
-    origin = typing.get_origin(result.resolved_type)
+    origin = typing.get_origin(result)
     if origin is Union or origin is getattr(types, 'UnionType', None):
-        args = typing.get_args(result.resolved_type)
+        args = typing.get_args(result)
         # B should not be in the result since it's unbound
         assert int in args
         assert str in args
@@ -1400,37 +1399,37 @@ def test_additional_edge_cases():
     assert set(union_args) == {int, str}
     
     # Test substitution with generic alias
-    bindings = {K: get_generic_info(str), V: get_generic_info(int)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Dict[K, V]), bindings)
+    substitution = Substitution({K: get_generic_info(str), V: get_generic_info(int)})
+    result = substitution.apply(Dict[K, V])
     
-    assert typing.get_origin(result.resolved_type) == dict
-    key_type, val_type = typing.get_args(result.resolved_type)
+    assert typing.get_origin(result) == dict
+    key_type, val_type = typing.get_args(result)
     assert key_type == str
     assert val_type == int
     
     # Test substitution preserves tuple structure
-    bindings = {A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Tuple[A, B, C]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)})
+    result = substitution.apply(Tuple[A, B, C])
     
-    assert typing.get_origin(result.resolved_type) == tuple
-    args = typing.get_args(result.resolved_type)
+    assert typing.get_origin(result) == tuple
+    args = typing.get_args(result)
     assert args == (int, str, float)
     
     # Test substitution with Set types
-    bindings = {A: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Set[A]), bindings)
+    substitution = Substitution({A: get_generic_info(str)})
+    result = substitution.apply(Set[A])
     
-    assert typing.get_origin(result.resolved_type) == set
-    assert typing.get_args(result.resolved_type) == (str,)
+    assert typing.get_origin(result) == set
+    assert typing.get_args(result) == (str,)
     
     # Test substitution with generic class
     
-    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(GenericPair[A, B]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str)})
+    result = substitution.apply(GenericPair[A, B])
     
     # Should attempt to reconstruct GenericPair[int, str]
-    assert result.resolved_type == GenericPair[int, str]
-    assert result.resolved_type != GenericPair[A, B]
+    assert result == GenericPair[int, str]
+    assert result != GenericPair[A, B]
     
     # Test additional edge cases for coverage
     # Test union distribution with context-aware matching
@@ -1499,23 +1498,23 @@ def test_additional_edge_cases():
     assert set(union_args) == {int, str}
     
     # Test substitution with union reconstruction
-    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str)})
     union_type = Union[A, B]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Should reconstruct union
-    origin = typing.get_origin(result.resolved_type)
+    origin = typing.get_origin(result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    args = typing.get_args(result.resolved_type)
+    args = typing.get_args(result)
     assert set(args) == {int, str}
     
     # Test substitution with single union arg
-    bindings = {A: get_generic_info(int)}
+    substitution = Substitution({A: get_generic_info(int)})
     union_type = Union[A]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Single union arg should be returned directly
-    assert result.resolved_type == int
+    assert result == int
     
     # Test additional edge cases for final coverage push
     # Test constraint solver edge cases
@@ -1565,92 +1564,92 @@ def test_additional_edge_cases():
     assert t == int
     
     # Test substitution with generic alias reconstruction
-    bindings = {K: get_generic_info(str), V: get_generic_info(int)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Dict[K, V]), bindings)
+    substitution = Substitution({K: get_generic_info(str), V: get_generic_info(int)})
+    result = substitution.apply(Dict[K, V])
     
-    assert typing.get_origin(result.resolved_type) == dict
-    key_type, val_type = typing.get_args(result.resolved_type)
+    assert typing.get_origin(result) == dict
+    key_type, val_type = typing.get_args(result)
     assert key_type == str
     assert val_type == int
     
     # Test substitution with tuple reconstruction
-    bindings = {A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Tuple[A, B, C]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)})
+    result = substitution.apply(Tuple[A, B, C])
     
-    assert typing.get_origin(result.resolved_type) == tuple
-    args = typing.get_args(result.resolved_type)
+    assert typing.get_origin(result) == tuple
+    args = typing.get_args(result)
     assert args == (int, str, float)
     
     # Test substitution with set reconstruction
-    bindings = {A: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(Set[A]), bindings)
+    substitution = Substitution({A: get_generic_info(str)})
+    result = substitution.apply(Set[A])
     
-    assert typing.get_origin(result.resolved_type) == set
-    assert typing.get_args(result.resolved_type) == (str,)
+    assert typing.get_origin(result) == set
+    assert typing.get_args(result) == (str,)
     
     # Test substitution with generic class reconstruction
     
-    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(SubstitutionContainer[A, B]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str)})
+    result = substitution.apply(SubstitutionContainer[A, B])
     
     # Should attempt to reconstruct SubstitutionContainer[int, str]
-    assert result.resolved_type == SubstitutionContainer[int, str]
-    assert result.resolved_type != SubstitutionContainer[A, B]
+    assert result == SubstitutionContainer[int, str]
+    assert result != SubstitutionContainer[A, B]
     
     # Test substitution with other generic types (fallback)
-    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
-    result = _substitute_typevars_in_generic_info(get_generic_info(SubstitutionContainer[A, B]), bindings)
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str)})
+    result = substitution.apply(SubstitutionContainer[A, B])
     
     # Should attempt reconstruction
-    assert result.resolved_type == SubstitutionContainer[int, str]
+    assert result == SubstitutionContainer[int, str]
     
     # Test substitution with union reconstruction
-    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
+    substitution = Substitution({A: get_generic_info(int), B: get_generic_info(str)})
     union_type = Union[A, B]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Should reconstruct union
-    origin = typing.get_origin(result.resolved_type)
+    origin = typing.get_origin(result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    args = typing.get_args(result.resolved_type)
+    args = typing.get_args(result)
     assert set(args) == {int, str}
     
     # Test substitution with single union arg
-    bindings = {A: get_generic_info(int)}
+    substitution = Substitution({A: get_generic_info(int)})
     union_type = Union[A]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Single union arg should be returned directly
-    assert result.resolved_type == int
+    assert result == int
     
     # Test substitution with mixed bound/unbound TypeVars
-    bindings = {A: get_generic_info(int)}
+    substitution = Substitution({A: get_generic_info(int)})
     union_type = Union[A, B, str]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Should only include bound args (int and str), not B
-    origin = typing.get_origin(result.resolved_type)
+    origin = typing.get_origin(result)
     if origin is Union or origin is getattr(types, 'UnionType', None):
-        args = typing.get_args(result.resolved_type)
+        args = typing.get_args(result)
         # B should not be in the result since it's unbound
         assert int in args
         assert str in args
     
     # Test substitution with no bound args
-    bindings = {}
+    substitution = Substitution({})
     union_type = Union[A, B]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Should return original annotation since no args were bound
-    assert result.resolved_type == union_type
+    assert result == union_type
     
     # Test substitution with single bound arg
-    bindings = {A: get_generic_info(int)}
+    substitution = Substitution({A: get_generic_info(int)})
     union_type = Union[A, B]
-    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
+    result = substitution.apply(union_type)
     
     # Should return only the bound arg
-    assert result.resolved_type == int
+    assert result == int
     
     # Test additional edge cases for final coverage push
     # Test constraint solver with conflicting override constraints

@@ -16,6 +16,7 @@ import inspect
 from typing import Any, Dict, List, Optional, Set, Tuple, TypeVar
 from enum import Enum
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 # Import unified generic utilities
 from generic_utils import (
@@ -60,11 +61,11 @@ class Constraint:
         return self.__str__()
 
 
+@dataclass
 class Substitution:
     """Represents a substitution of TypeVars to concrete types."""
     
-    def __init__(self):
-        self.bindings: Dict[TypeVar, GenericInfo] = {}  # Always GenericInfo
+    bindings: Dict[TypeVar, GenericInfo] = field(default_factory=dict)  # Always GenericInfo
     
     def bind(self, typevar: TypeVar, concrete_type: GenericInfo):
         """Bind a TypeVar to a concrete type (GenericInfo)."""
