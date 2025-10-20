@@ -698,7 +698,7 @@ def create_union_if_needed(types_set: set) -> Any:
         return type(None)
 
 
-def create_generic_info_union_if_needed(generic_info_set: set) -> GenericInfo:
+def create_generic_info_union_if_needed(generic_info_set: set[GenericInfo]) -> GenericInfo:
     """Create a GenericInfo Union type if needed, or return single GenericInfo.
     
     Works entirely within GenericInfo objects without resolving to actual types.
@@ -707,9 +707,7 @@ def create_generic_info_union_if_needed(generic_info_set: set) -> GenericInfo:
         return list(generic_info_set)[0]
     elif len(generic_info_set) > 1:
         # Create a Union GenericInfo with all the GenericInfo objects as concrete_args
-        union_origin = Union
-        concrete_args = list(generic_info_set)
-        return GenericInfo(origin=union_origin, concrete_args=concrete_args)
+        return GenericInfo(origin=Union, concrete_args=list(generic_info_set))
     else:
         # Empty set - return GenericInfo for NoneType
         return GenericInfo(origin=type(None))

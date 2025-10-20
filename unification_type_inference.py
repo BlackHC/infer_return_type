@@ -19,7 +19,7 @@ from collections import defaultdict
 
 # Import unified generic utilities
 from generic_utils import (
-    GenericInfo, get_generic_info, get_instance_generic_info, create_union_if_needed, get_annotation_value_pairs, is_union_type
+    GenericInfo, get_generic_info, get_instance_generic_info, create_generic_info_union_if_needed, get_annotation_value_pairs, is_union_type
 )
 
 
@@ -591,8 +591,9 @@ class UnificationEngine:
         
         # If we have covariant constraints (like List[A] with mixed elements), form union
         if covariant_constraints and not invariant_constraints:
-            union_type = create_union_if_needed(set(concrete_types))
-            union_info = get_generic_info(union_type)
+            # Use GenericInfo objects directly for union formation
+            concrete_type_infos = [c.concrete_type for c in covariant_constraints]
+            union_info = create_generic_info_union_if_needed(set(concrete_type_infos))
             resolved_type = self._check_typevar_bounds(typevar, union_info)
             return resolved_type
         
@@ -602,14 +603,16 @@ class UnificationEngine:
             invariant_types = [c.concrete_type_resolved for c in invariant_constraints]
             if len(set(invariant_types)) > 1:
                 # Multiple independent sources with different types - create union
-                union_type = create_union_if_needed(set(invariant_types))
-                union_info = get_generic_info(union_type)
+                # Use GenericInfo objects directly for union formation
+                concrete_type_infos = [c.concrete_type for c in invariant_constraints]
+                union_info = create_generic_info_union_if_needed(set(concrete_type_infos))
                 resolved_type = self._check_typevar_bounds(typevar, union_info)
                 return resolved_type
         
         # Mixed variance - default to union formation
-        union_type = create_union_if_needed(set(concrete_types))
-        union_info = get_generic_info(union_type)
+        # Use GenericInfo objects directly for union formation
+        concrete_type_infos = [c.concrete_type for c in constraints]
+        union_info = create_generic_info_union_if_needed(set(concrete_type_infos))
         resolved_type = self._check_typevar_bounds(typevar, union_info)
         return resolved_type
     
@@ -734,23 +737,21 @@ def _infer_type_from_value(value: Any) -> GenericInfo:
     # For collections, try to infer element types
     if isinstance(value, list) and value:
         element_types = {type(item) for item in value}
-        if len(element_types) == 1:
-            element_type = list(element_types)[0]
-            element_info = GenericInfo(origin=element_type)
-            return GenericInfo(origin=list, concrete_args=[element_info])
-        else:
-            union_type = create_union_if_needed(element_types)
-            union_info = get_generic_info(union_type)
-            return GenericInfo(origin=list, concrete_args=[union_info])
+        # Create GenericInfo objects for each element type and form union
+        element_infos = [GenericInfo(origin=t) for t in element_types]
+        union_info = create_generic_info_union_if_needed(set(element_infos))
+        return GenericInfo(origin=list, concrete_args=[union_info])
     elif isinstance(value, dict) and value:
         key_types = {type(k) for k in value.keys()}
         value_types = {type(v) for v in value.values()}
         
-        key_type = list(key_types)[0] if len(key_types) == 1 else create_union_if_needed(key_types)
-        value_type = list(value_types)[0] if len(value_types) == 1 else create_union_if_needed(value_types)
+        # Handle key types
+        key_infos = [GenericInfo(origin=t) for t in key_types]
+        key_info = create_generic_info_union_if_needed(set(key_infos))
         
-        key_info = get_generic_info(key_type)
-        value_info = get_generic_info(value_type)
+        # Handle value types
+        value_infos = [GenericInfo(origin=t) for t in value_types]
+        value_info = create_generic_info_union_if_needed(set(value_infos))
         return GenericInfo(origin=dict, concrete_args=[key_info, value_info])
     elif isinstance(value, tuple):
         element_types = tuple(type(item) for item in value)
@@ -758,14 +759,10 @@ def _infer_type_from_value(value: Any) -> GenericInfo:
         return GenericInfo(origin=tuple, concrete_args=element_infos)
     elif isinstance(value, set) and value:
         element_types = {type(item) for item in value}
-        if len(element_types) == 1:
-            element_type = list(element_types)[0]
-            element_info = GenericInfo(origin=element_type)
-            return GenericInfo(origin=set, concrete_args=[element_info])
-        else:
-            union_type = create_union_if_needed(element_types)
-            union_info = get_generic_info(union_type)
-            return GenericInfo(origin=set, concrete_args=[union_info])
+        # Create GenericInfo objects for each element type and form union
+        element_infos = [GenericInfo(origin=t) for t in element_types]
+        union_info = create_generic_info_union_if_needed(set(element_infos))
+        return GenericInfo(origin=set, concrete_args=[union_info])
     
     return GenericInfo(origin=base_type)
 
