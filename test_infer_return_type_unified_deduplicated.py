@@ -1,18 +1,35 @@
-import typing
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple, TypeVar, Union, Callable, ForwardRef
+import types
+import typing
+from typing import (
+    Callable,
+    Dict,
+    ForwardRef,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
+from pydantic import BaseModel
 import pytest
+
+from generic_utils import get_generic_info
 from unification_type_inference import (
-    TypeInferenceError,
-    infer_return_type_unified as infer_return_type,
-    UnificationEngine,
     Constraint,
     Substitution,
+    TypeInferenceError,
+    UnificationEngine,
+    UnificationError,
     Variance,
-    UnificationError
+    _has_unbound_typevars_in_generic_info,
+    _infer_type_from_value,
+    _is_subtype,
+    _substitute_typevars_in_generic_info,
+    infer_return_type_unified as infer_return_type,
 )
-from pydantic import BaseModel
 
 # TypeVars for testing
 A = TypeVar('A')
@@ -347,7 +364,7 @@ def test_multi_typevar_interactions():
     # Conflicting TypeVars create unions
     def same_typevar_conflict(a: List[A], b: List[A]) -> A: ...
     t = infer_return_type(same_typevar_conflict, [1, 2], ["a", "b"])
-    import types
+
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
@@ -523,7 +540,6 @@ def test_union_types_and_distribution():
     mixed_list = [1, "hello", 3.14]
     t = infer_return_type(process_mixed_list, mixed_list)
     
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
@@ -599,7 +615,7 @@ def test_optional_and_none_handling():
     test_data = [1, None, 2]
     
     t = infer_return_type(process_nested_optional, test_data)
-    import types
+
     origin = typing.get_origin(t)
     if origin is Union or origin is getattr(types, 'UnionType', None):
         union_args = typing.get_args(t)
@@ -629,7 +645,6 @@ def test_optional_and_none_handling():
     t = infer_return_type(process_var_tuple, (1, "hello", 2, "world"))
     assert typing.get_origin(t) is set
     union_arg = typing.get_args(t)[0]
-    import types
     origin = typing.get_origin(union_arg)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
 
@@ -760,7 +775,6 @@ def test_variance_and_covariance():
     mixed_list = [Dog(), Cat()]
     result = infer_return_type(covariant_test, mixed_list)
     
-    import types
     origin = typing.get_origin(result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(result)
@@ -860,48 +874,48 @@ def test_unification_engine_internals():
     
     # Direct API testing
     substitution = engine.unify_annotation_with_value(List[A], [1, 2, 3])
-    assert substitution.get(A) == int
+    assert substitution.get(A).resolved_type == int
     
     substitution = engine.unify_annotation_with_value(Dict[K, V], {"a": 1})
-    assert substitution.get(K) == str
-    assert substitution.get(V) == int
+    assert substitution.get(K).resolved_type == str
+    assert substitution.get(V).resolved_type == int
     
     # With pre-existing constraints
-    existing_constraints = [Constraint(A, int, Variance.INVARIANT)]
+    existing_constraints = [Constraint(A, get_generic_info(int), Variance.INVARIANT)]
     substitution = engine.unify_annotation_with_value(
         List[A], [1, 2, 3], constraints=existing_constraints
     )
-    assert substitution.get(A) == int
+    assert substitution.get(A).resolved_type == int
     
     # None constraints
     substitution = engine.unify_annotation_with_value(Set[A], {1, 2, 3}, constraints=None)
-    assert substitution.get(A) == int
+    assert substitution.get(A).resolved_type == int
     
     # Constraint solver with many constraints
-    constraints = [Constraint(A, int, Variance.COVARIANT) for _ in range(10)]
-    constraints.extend([Constraint(A, str, Variance.COVARIANT) for _ in range(10)])
+    constraints = [Constraint(A, get_generic_info(int), Variance.COVARIANT) for _ in range(10)]
+    constraints.extend([Constraint(A, get_generic_info(str), Variance.COVARIANT) for _ in range(10)])
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    import types
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     
     # Override constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT),
-        Constraint(A, str, Variance.COVARIANT),
-        Constraint(A, float, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
+        Constraint(A, get_generic_info(str), Variance.COVARIANT),
+        Constraint(A, get_generic_info(float), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
-    assert sub.get(A) == float  # Override should take precedence
+    assert sub.get(A).resolved_type == float  # Override should take precedence
     
     # Conflicting overrides
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, str, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(str), Variance.INVARIANT, is_override=True),
     ]
     
     with pytest.raises(UnificationError, match="Conflicting override"):
@@ -909,57 +923,57 @@ def test_unification_engine_internals():
 
 
 def test_helper_functions():
-    """Test internal helper functions."""
+    """Test internal helper functions."""    
+    # _has_unbound_typevars_in_generic_info
+    assert _has_unbound_typevars_in_generic_info(get_generic_info(A)) == True
+    assert _has_unbound_typevars_in_generic_info(get_generic_info(int)) == False
+    assert _has_unbound_typevars_in_generic_info(get_generic_info(List[A])) == True
+    assert _has_unbound_typevars_in_generic_info(get_generic_info(List[int])) == False
+    assert _has_unbound_typevars_in_generic_info(get_generic_info(Dict[A, int])) == True
+    assert _has_unbound_typevars_in_generic_info(get_generic_info(Dict[str, int])) == False
     
-    from unification_type_inference import _has_unbound_typevars, _substitute_typevars, _infer_type_from_value, _is_subtype
+    # _substitute_typevars_in_generic_info
+    bindings = {B: get_generic_info(int)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(A), bindings)
+    assert result.resolved_type == A  # A is not in bindings
     
-    # _has_unbound_typevars
-    assert _has_unbound_typevars(A) == True
-    assert _has_unbound_typevars(int) == False
-    assert _has_unbound_typevars(List[A]) == True
-    assert _has_unbound_typevars(List[int]) == False
-    assert _has_unbound_typevars(Dict[A, int]) == True
-    assert _has_unbound_typevars(Dict[str, int]) == False
-    
-    # _substitute_typevars
-    bindings = {B: int}
-    result = _substitute_typevars(A, bindings)
-    assert result == A  # A is not in bindings
-    
-    bindings = {A: int}
+    bindings = {A: get_generic_info(int)}
     union_type = Union[A, B, str]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
-    import types
-    origin = typing.get_origin(result)
+    origin = typing.get_origin(result.resolved_type)
     if origin is Union or origin is getattr(types, 'UnionType', None):
-        args = typing.get_args(result)
+        args = typing.get_args(result.resolved_type)
         assert int in args
         assert str in args
     
-    # _infer_type_from_value
+    # _infer_type_from_value (now returns GenericInfo)
     t = _infer_type_from_value(None)
-    assert t == type(None)
+    assert t.resolved_type == type(None)
     
     t = _infer_type_from_value([])
-    assert t == list
+    assert t.resolved_type == list
     
     t = _infer_type_from_value([1, 2, 3])
-    assert typing.get_origin(t) is list
-    assert typing.get_args(t) == (int,)
+    resolved = t.resolved_type
+    assert typing.get_origin(resolved) is list
+    assert typing.get_args(resolved) == (int,)
     
     t = _infer_type_from_value({1: "a", 2: "b"})
-    assert typing.get_origin(t) is dict
-    key_type, val_type = typing.get_args(t)
+    resolved = t.resolved_type
+    assert typing.get_origin(resolved) is dict
+    key_type, val_type = typing.get_args(resolved)
     assert key_type == int
     assert val_type == str
     
     t = _infer_type_from_value({1, 2, 3})
-    assert typing.get_origin(t) is set
-    assert typing.get_args(t) == (int,)
+    resolved = t.resolved_type
+    assert typing.get_origin(resolved) is set
+    assert typing.get_args(resolved) == (int,)
     
     t = _infer_type_from_value((1, "hello", 3.14))
-    assert typing.get_origin(t) is tuple
+    resolved = t.resolved_type
+    assert typing.get_origin(resolved) is tuple
     
     # _is_subtype
     assert _is_subtype(bool, int) == True  # bool is subtype of int
@@ -972,13 +986,13 @@ def test_substitution_and_constraint_internals():
     """Test Constraint and Substitution class internals."""
     
     # Constraint __str__ and __repr__
-    constraint = Constraint(A, int, Variance.COVARIANT)
+    constraint = Constraint(A, get_generic_info(int), Variance.COVARIANT)
     str_repr = str(constraint)
     assert "~" in str_repr
     assert "covariant" in str_repr
     
     # Constraint with is_override flag
-    override_constraint = Constraint(A, str, Variance.INVARIANT, is_override=True)
+    override_constraint = Constraint(A, get_generic_info(str), Variance.INVARIANT, is_override=True)
     override_str = str(override_constraint)
     assert "override" in override_str
     repr_str = repr(override_constraint)
@@ -986,20 +1000,20 @@ def test_substitution_and_constraint_internals():
     
     # Substitution.compose
     sub1 = Substitution()
-    sub1.bind(A, int)
+    sub1.bind(A, get_generic_info(int))
     
     sub2 = Substitution()
-    sub2.bind(B, str)
+    sub2.bind(B, get_generic_info(str))
     
     composed = sub1.compose(sub2)
-    assert composed.get(A) == int
-    assert composed.get(B) == str
+    assert composed.get(A).resolved_type == int
+    assert composed.get(B).resolved_type == str
     
     # Substitution.__str__
     sub = Substitution()
-    sub.bind(A, int)
-    sub.bind(B, str)
-    sub.bind(C, float)
+    sub.bind(A, get_generic_info(int))
+    sub.bind(B, get_generic_info(str))
+    sub.bind(C, get_generic_info(float))
     
     str_repr = str(sub)
     assert "A" in str_repr or "~A" in str_repr
@@ -1074,7 +1088,6 @@ def test_keyword_arguments_and_edge_cases():
     t = infer_return_type(process_var_tuple, (1, "hello", 2, "world"))
     assert typing.get_origin(t) is set
     union_arg = typing.get_args(t)[0]
-    import types
     origin = typing.get_origin(union_arg)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     
@@ -1139,7 +1152,6 @@ def test_complex_union_structures():
     t = infer_return_type(process_nested_union, mixed_list)
     
     # Should return Union[int, str] or int | str
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     
@@ -1150,51 +1162,48 @@ def test_complex_union_structures():
 def test_substitution_and_type_reconstruction():
     """Test type substitution and reconstruction edge cases."""
     
-    from unification_type_inference import _substitute_typevars
-    
     # Test substituting in dict type
-    bindings = {K: str, V: int}
-    result = _substitute_typevars(Dict[K, V], bindings)
+    bindings = {K: get_generic_info(str), V: get_generic_info(int)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Dict[K, V]), bindings)
     
-    assert typing.get_origin(result) == dict
-    key_type, val_type = typing.get_args(result)
+    assert typing.get_origin(result.resolved_type) == dict
+    key_type, val_type = typing.get_args(result.resolved_type)
     assert key_type == str
     assert val_type == int
     
     # Fixed-length tuple substitution
-    bindings = {A: int, B: str, C: float}
-    result = _substitute_typevars(Tuple[A, B, C], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Tuple[A, B, C]), bindings)
     
-    assert typing.get_origin(result) == tuple
-    args = typing.get_args(result)
+    assert typing.get_origin(result.resolved_type) == tuple
+    args = typing.get_args(result.resolved_type)
     assert args == (int, str, float)
     
     # Set type substitution
-    bindings = {A: str}
-    result = _substitute_typevars(Set[A], bindings)
+    bindings = {A: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Set[A]), bindings)
     
-    assert typing.get_origin(result) == set
-    assert typing.get_args(result) == (str,)
+    assert typing.get_origin(result.resolved_type) == set
+    assert typing.get_args(result.resolved_type) == (str,)
     
     # Custom generic class substitution
     
-    bindings = {A: int, B: str}
-    result = _substitute_typevars(GenericPair[A, B], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(GenericPair[A, B]), bindings)
     
     # Should attempt to reconstruct GenericPair[int, str]
-    assert result == GenericPair[int, str]
-    assert result != GenericPair[A, B]
+    assert result.resolved_type == GenericPair[int, str]
+    assert result.resolved_type != GenericPair[A, B]
     
     # Union substitution with mixed bound/unbound TypeVars
-    bindings = {A: int}
+    bindings = {A: get_generic_info(int)}
     union_type = Union[A, B, str]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Should only include bound args (int and str), not B
-    import types
-    origin = typing.get_origin(result)
+    origin = typing.get_origin(result.resolved_type)
     if origin is Union or origin is getattr(types, 'UnionType', None):
-        args = typing.get_args(result)
+        args = typing.get_args(result.resolved_type)
         # B should not be in the result since it's unbound
         assert int in args
         assert str in args
@@ -1202,39 +1211,41 @@ def test_substitution_and_type_reconstruction():
 
 def test_additional_edge_cases():
     """Test additional edge cases to improve coverage."""
+    from generic_utils import get_generic_info
     
     # Test constraint solver with many constraints
     engine = UnificationEngine()
-    constraints = [Constraint(A, int, Variance.COVARIANT) for _ in range(10)]
-    constraints.extend([Constraint(A, str, Variance.COVARIANT) for _ in range(10)])
+    constraints = [Constraint(A, get_generic_info(int), Variance.COVARIANT) for _ in range(10)]
+    constraints.extend([Constraint(A, get_generic_info(str), Variance.COVARIANT) for _ in range(10)])
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    import types
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     
     # Test constraint solver when all constraints are identical
-    constraints = [Constraint(A, int, Variance.INVARIANT) for _ in range(100)]
+    constraints = [Constraint(A, get_generic_info(int), Variance.INVARIANT) for _ in range(100)]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test mixed variance constraints
     constraints = [
-        Constraint(A, int, Variance.COVARIANT),
-        Constraint(A, str, Variance.INVARIANT),
-        Constraint(A, float, Variance.COVARIANT),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT),
+        Constraint(A, get_generic_info(str), Variance.INVARIANT),
+        Constraint(A, get_generic_info(float), Variance.COVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    union_args = typing.get_args(result)
+    union_args = typing.get_args(resolved_result)
     assert set(union_args) == {int, str, float}
     
     # Test union components matching
@@ -1299,30 +1310,30 @@ def test_additional_edge_cases():
     t = infer_return_type(process_custom, instance)
     assert t == int
     
-    # Test NoneType inference
+    # Test NoneType inference (now returns GenericInfo)
     from unification_type_inference import _infer_type_from_value
     t = _infer_type_from_value(None)
-    assert t == type(None)
+    assert t.resolved_type == type(None)
     
     # Test empty list inference
     t = _infer_type_from_value([])
-    assert t == list
+    assert t.resolved_type == list
     
     # Test mixed list inference
     t = _infer_type_from_value([1, "hello"])
-    assert typing.get_origin(t) is list
+    assert typing.get_origin(t.resolved_type) is list
     
     # Test empty dict inference
     t = _infer_type_from_value({})
-    assert t == dict
+    assert t.resolved_type == dict
     
     # Test empty set inference
     t = _infer_type_from_value(set())
-    assert t == set
+    assert t.resolved_type == set
     
     # Test tuple inference
     t = _infer_type_from_value((1, "hello", 3.14))
-    assert typing.get_origin(t) is tuple
+    assert typing.get_origin(t.resolved_type) is tuple
     
     # Test _is_subtype edge cases
     from unification_type_inference import _is_subtype
@@ -1389,38 +1400,37 @@ def test_additional_edge_cases():
     assert set(union_args) == {int, str}
     
     # Test substitution with generic alias
-    from unification_type_inference import _substitute_typevars
-    bindings = {K: str, V: int}
-    result = _substitute_typevars(Dict[K, V], bindings)
+    bindings = {K: get_generic_info(str), V: get_generic_info(int)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Dict[K, V]), bindings)
     
-    assert typing.get_origin(result) == dict
-    key_type, val_type = typing.get_args(result)
+    assert typing.get_origin(result.resolved_type) == dict
+    key_type, val_type = typing.get_args(result.resolved_type)
     assert key_type == str
     assert val_type == int
     
     # Test substitution preserves tuple structure
-    bindings = {A: int, B: str, C: float}
-    result = _substitute_typevars(Tuple[A, B, C], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Tuple[A, B, C]), bindings)
     
-    assert typing.get_origin(result) == tuple
-    args = typing.get_args(result)
+    assert typing.get_origin(result.resolved_type) == tuple
+    args = typing.get_args(result.resolved_type)
     assert args == (int, str, float)
     
     # Test substitution with Set types
-    bindings = {A: str}
-    result = _substitute_typevars(Set[A], bindings)
+    bindings = {A: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Set[A]), bindings)
     
-    assert typing.get_origin(result) == set
-    assert typing.get_args(result) == (str,)
+    assert typing.get_origin(result.resolved_type) == set
+    assert typing.get_args(result.resolved_type) == (str,)
     
     # Test substitution with generic class
     
-    bindings = {A: int, B: str}
-    result = _substitute_typevars(GenericPair[A, B], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(GenericPair[A, B]), bindings)
     
     # Should attempt to reconstruct GenericPair[int, str]
-    assert result == GenericPair[int, str]
-    assert result != GenericPair[A, B]
+    assert result.resolved_type == GenericPair[int, str]
+    assert result.resolved_type != GenericPair[A, B]
     
     # Test additional edge cases for coverage
     # Test union distribution with context-aware matching
@@ -1489,23 +1499,23 @@ def test_additional_edge_cases():
     assert set(union_args) == {int, str}
     
     # Test substitution with union reconstruction
-    bindings = {A: int, B: str}
+    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
     union_type = Union[A, B]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Should reconstruct union
-    origin = typing.get_origin(result)
+    origin = typing.get_origin(result.resolved_type)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    args = typing.get_args(result)
+    args = typing.get_args(result.resolved_type)
     assert set(args) == {int, str}
     
     # Test substitution with single union arg
-    bindings = {A: int}
+    bindings = {A: get_generic_info(int)}
     union_type = Union[A]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Single union arg should be returned directly
-    assert result == int
+    assert result.resolved_type == int
     
     # Test additional edge cases for final coverage push
     # Test constraint solver edge cases
@@ -1513,30 +1523,31 @@ def test_additional_edge_cases():
     
     # Test with override constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT),
-        Constraint(A, str, Variance.COVARIANT),
-        Constraint(A, float, Variance.INVARIANT, is_override=True),  # Override wins
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
+        Constraint(A, get_generic_info(str), Variance.COVARIANT),
+        Constraint(A, get_generic_info(float), Variance.INVARIANT, is_override=True),  # Override wins
     ]
     
     sub = engine._solve_constraints(constraints)
-    assert sub.get(A) == float  # Override should take precedence
+    assert sub.get(A).resolved_type == float  # Override should take precedence
     
     # Test constraint solver with many constraints (stress test)
-    constraints = [Constraint(A, int, Variance.COVARIANT) for _ in range(10)]
-    constraints.extend([Constraint(A, str, Variance.COVARIANT) for _ in range(10)])
+    constraints = [Constraint(A, get_generic_info(int), Variance.COVARIANT) for _ in range(10)]
+    constraints.extend([Constraint(A, get_generic_info(str), Variance.COVARIANT) for _ in range(10)])
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     
     # Test constraint solver when all constraints are identical
-    constraints = [Constraint(A, int, Variance.INVARIANT) for _ in range(100)]
+    constraints = [Constraint(A, get_generic_info(int), Variance.INVARIANT) for _ in range(100)]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test union constraint handling errors
     def process_strict_union_error(x: Union[List[int], Dict[str, str]]) -> int: ...
@@ -1554,73 +1565,73 @@ def test_additional_edge_cases():
     assert t == int
     
     # Test substitution with generic alias reconstruction
-    bindings = {K: str, V: int}
-    result = _substitute_typevars(Dict[K, V], bindings)
+    bindings = {K: get_generic_info(str), V: get_generic_info(int)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Dict[K, V]), bindings)
     
-    assert typing.get_origin(result) == dict
-    key_type, val_type = typing.get_args(result)
+    assert typing.get_origin(result.resolved_type) == dict
+    key_type, val_type = typing.get_args(result.resolved_type)
     assert key_type == str
     assert val_type == int
     
     # Test substitution with tuple reconstruction
-    bindings = {A: int, B: str, C: float}
-    result = _substitute_typevars(Tuple[A, B, C], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str), C: get_generic_info(float)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Tuple[A, B, C]), bindings)
     
-    assert typing.get_origin(result) == tuple
-    args = typing.get_args(result)
+    assert typing.get_origin(result.resolved_type) == tuple
+    args = typing.get_args(result.resolved_type)
     assert args == (int, str, float)
     
     # Test substitution with set reconstruction
-    bindings = {A: str}
-    result = _substitute_typevars(Set[A], bindings)
+    bindings = {A: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(Set[A]), bindings)
     
-    assert typing.get_origin(result) == set
-    assert typing.get_args(result) == (str,)
+    assert typing.get_origin(result.resolved_type) == set
+    assert typing.get_args(result.resolved_type) == (str,)
     
     # Test substitution with generic class reconstruction
     
-    bindings = {A: int, B: str}
-    result = _substitute_typevars(SubstitutionContainer[A, B], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(SubstitutionContainer[A, B]), bindings)
     
     # Should attempt to reconstruct SubstitutionContainer[int, str]
-    assert result == SubstitutionContainer[int, str]
-    assert result != SubstitutionContainer[A, B]
+    assert result.resolved_type == SubstitutionContainer[int, str]
+    assert result.resolved_type != SubstitutionContainer[A, B]
     
     # Test substitution with other generic types (fallback)
-    bindings = {A: int, B: str}
-    result = _substitute_typevars(SubstitutionContainer[A, B], bindings)
+    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
+    result = _substitute_typevars_in_generic_info(get_generic_info(SubstitutionContainer[A, B]), bindings)
     
     # Should attempt reconstruction
-    assert result == SubstitutionContainer[int, str]
+    assert result.resolved_type == SubstitutionContainer[int, str]
     
     # Test substitution with union reconstruction
-    bindings = {A: int, B: str}
+    bindings = {A: get_generic_info(int), B: get_generic_info(str)}
     union_type = Union[A, B]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Should reconstruct union
-    origin = typing.get_origin(result)
+    origin = typing.get_origin(result.resolved_type)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    args = typing.get_args(result)
+    args = typing.get_args(result.resolved_type)
     assert set(args) == {int, str}
     
     # Test substitution with single union arg
-    bindings = {A: int}
+    bindings = {A: get_generic_info(int)}
     union_type = Union[A]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Single union arg should be returned directly
-    assert result == int
+    assert result.resolved_type == int
     
     # Test substitution with mixed bound/unbound TypeVars
-    bindings = {A: int}
+    bindings = {A: get_generic_info(int)}
     union_type = Union[A, B, str]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Should only include bound args (int and str), not B
-    origin = typing.get_origin(result)
+    origin = typing.get_origin(result.resolved_type)
     if origin is Union or origin is getattr(types, 'UnionType', None):
-        args = typing.get_args(result)
+        args = typing.get_args(result.resolved_type)
         # B should not be in the result since it's unbound
         assert int in args
         assert str in args
@@ -1628,24 +1639,24 @@ def test_additional_edge_cases():
     # Test substitution with no bound args
     bindings = {}
     union_type = Union[A, B]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Should return original annotation since no args were bound
-    assert result == union_type
+    assert result.resolved_type == union_type
     
     # Test substitution with single bound arg
-    bindings = {A: int}
+    bindings = {A: get_generic_info(int)}
     union_type = Union[A, B]
-    result = _substitute_typevars(union_type, bindings)
+    result = _substitute_typevars_in_generic_info(get_generic_info(union_type), bindings)
     
     # Should return only the bound arg
-    assert result == int
+    assert result.resolved_type == int
     
     # Test additional edge cases for final coverage push
     # Test constraint solver with conflicting override constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, str, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(str), Variance.INVARIANT, is_override=True),
     ]
     
     # This should raise an error due to conflicting overrides
@@ -1653,9 +1664,9 @@ def test_additional_edge_cases():
         engine._solve_constraints(constraints)
     
     # Test constraint solver with single constraint
-    constraints = [Constraint(A, int, Variance.INVARIANT)]
+    constraints = [Constraint(A, get_generic_info(int), Variance.INVARIANT)]
     sub = engine._solve_constraints(constraints)
-    assert sub.get(A) == int
+    assert sub.get(A).resolved_type == int
     
     # Test constraint solver with no constraints
     constraints = []
@@ -1665,337 +1676,340 @@ def test_additional_edge_cases():
     
     # Test constraint solver with covariant constraints only
     constraints = [
-        Constraint(A, int, Variance.COVARIANT),
-        Constraint(A, str, Variance.COVARIANT),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT),
+        Constraint(A, get_generic_info(str), Variance.COVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    union_args = typing.get_args(result)
+    union_args = typing.get_args(resolved_result)
     assert set(union_args) == {int, str}
     
     # Test constraint solver with mixed variance (invariant + covariant)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT),
-        Constraint(A, str, Variance.COVARIANT),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
+        Constraint(A, get_generic_info(str), Variance.COVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    union_args = typing.get_args(result)
+    union_args = typing.get_args(resolved_result)
     assert set(union_args) == {int, str}
     
     # Test constraint solver with multiple invariant constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT),
-        Constraint(A, str, Variance.INVARIANT),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
+        Constraint(A, get_generic_info(str), Variance.INVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
     
-    origin = typing.get_origin(result)
+    resolved_result = result.resolved_type
+    origin = typing.get_origin(resolved_result)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
-    union_args = typing.get_args(result)
+    union_args = typing.get_args(resolved_result)
     assert set(union_args) == {int, str}
     
     # Test constraint solver with identical invariant constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT),
-        Constraint(A, int, Variance.INVARIANT),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical covariant constraints
     constraints = [
-        Constraint(A, int, Variance.COVARIANT),
-        Constraint(A, int, Variance.COVARIANT),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical mixed constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT),
-        Constraint(A, int, Variance.COVARIANT),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test additional edge cases for final coverage push
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test additional edge cases for final coverage push
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
-        Constraint(A, int, Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.INVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test constraint solver with identical override constraints (different variance)
     constraints = [
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
-        Constraint(A, int, Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
+        Constraint(A, get_generic_info(int), Variance.COVARIANT, is_override=True),
     ]
     
     sub = engine._solve_constraints(constraints)
     result = sub.get(A)
-    assert result == int
+    assert result.resolved_type == int
     
     # Test ForwardRef handling edge cases
     from typing import ForwardRef
@@ -2241,7 +2255,6 @@ def test_mixed_types_at_each_depth_level():
     
     t = infer_return_type(process_multi_depth_mixed, mixed_data)
     # Should create union of all types found
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
@@ -2287,7 +2300,6 @@ def test_union_at_multiple_depths():
     multi_union_data = {"key": [1, 2, 3]}
     
     t = infer_return_type(process_multi_level_unions, multi_union_data)
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
 
@@ -2357,7 +2369,6 @@ def test_list_optional_dict_with_none():
     ]
     
     t = infer_return_type(process_multi_optional, complex_optional_data)
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
@@ -2394,7 +2405,6 @@ def test_list_optional_dict_some_none():
     ]
     
     t = infer_return_type(process_some_none, some_none_data)
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
@@ -2420,7 +2430,6 @@ def test_optional_list_vs_list_optional():
     # Test List[Optional[...]] - individual items might be None
     list_optional_data = [{"key": 42}, None, {"key": "hello"}]
     t2 = infer_return_type(process_list_optional, list_optional_data)
-    import types
     origin = typing.get_origin(t2)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t2)
@@ -2443,7 +2452,6 @@ def test_deeply_nested_optionals():
     ]
     
     t = infer_return_type(process_deep_optional, deep_optional_data)
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
@@ -2466,7 +2474,6 @@ def test_optional_none_filtering():
     }
     
     t = infer_return_type(process_optional_values, optional_values_data)
-    import types
     origin = typing.get_origin(t)
     assert origin is Union or origin is getattr(types, 'UnionType', None)
     union_args = typing.get_args(t)
