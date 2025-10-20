@@ -8,7 +8,7 @@ This library solves the problem of inferring concrete types for TypeVars in gene
 
 ```python
 from typing import TypeVar, List
-from unification_type_inference import infer_return_type_unified
+from infer_return_type import infer_return_type_unified
 
 A = TypeVar('A')
 
@@ -51,7 +51,7 @@ pip install -e .
 
 ```python
 from typing import TypeVar, List, Dict, Tuple
-from unification_type_inference import infer_return_type_unified
+from infer_return_type import infer_return_type_unified
 
 A = TypeVar('A')
 B = TypeVar('B')

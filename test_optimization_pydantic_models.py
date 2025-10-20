@@ -13,7 +13,7 @@ from typing import TypeVar
 from pydantic import BaseModel, Field
 import pytest
 
-from unification_type_inference import infer_return_type_unified as infer_return_type
+from infer_return_type import infer_return_type_unified as infer_return_type
 
 # TypeVars for optimization models
 T_TaskParameters = TypeVar('T_TaskParameters')

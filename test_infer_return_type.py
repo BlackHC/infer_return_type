@@ -16,7 +16,7 @@ from pydantic import BaseModel
 import pytest
 
 from generic_utils import get_generic_info
-from unification_type_inference import (
+from infer_return_type import (
     Constraint,
     Substitution,
     TypeInferenceError,
@@ -1432,7 +1432,7 @@ def test_additional_edge_cases():
     assert t == int
 
     # Test NoneType inference (now returns GenericInfo)
-    from unification_type_inference import _infer_type_from_value
+    from infer_return_type import _infer_type_from_value
 
     t = _infer_type_from_value(None)
     assert t.resolved_type == type(None)
@@ -1458,7 +1458,7 @@ def test_additional_edge_cases():
     assert typing.get_origin(t.resolved_type) is tuple
 
     # Test _is_subtype edge cases
-    from unification_type_inference import _is_subtype
+    from infer_return_type import _is_subtype
 
     assert _is_subtype(bool, int)
     assert _is_subtype(int, object)
