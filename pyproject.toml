@@ -1,11 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "infer-return-type"
 version = "0.1.0"
-description = "Add your description here"
+description = "Type inference for generic function return types using formal unification algorithms"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.11"
+authors = [
+    {name = "Andreas Kirsch", email = "andreas.kirsch@example.com"},
+]
+keywords = ["typing", "type-inference", "generics", "unification", "python"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 dependencies = [
     "pydantic>=2.11.5",
+]
+
+[project.optional-dependencies]
+dev = [
     "pytest>=8.3.5",
     "pytest-cov>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/blackhc/infer-return-type"
+Repository = "https://github.com/blackhc/infer-return-type"
+Issues = "https://github.com/blackhc/infer-return-type/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["infer_return_type"]
+
+[tool.uv]
+dev-dependencies = [
+    "build>=1.3.0",
 ]

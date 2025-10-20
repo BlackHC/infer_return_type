@@ -58,7 +58,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 # Import unified generic utilities
-from generic_utils import (
+from .generic_utils import (
     GenericInfo,
     get_generic_info,
     get_instance_generic_info,

@@ -15,7 +15,7 @@ import types
 from typing import Dict, List, TypeVar, Union, get_args, get_origin
 from dataclasses import dataclass
 
-from generic_utils import (
+from infer_return_type.generic_utils import (
     BuiltinExtractor,
     DataclassExtractor,
     GenericTypeUtils,
