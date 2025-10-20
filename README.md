@@ -296,13 +296,12 @@ Applies solved TypeVar bindings to return type annotations to produce concrete t
 
 ## Current Limitations
 
-Some advanced features are planned but not yet implemented (see skipped tests):
+Some advanced features are not yet implemented (see skipped tests):
 
-- ⚠️ **Conflicting Invariant Constraints**: Currently fails with error, should create unions
-- ⚠️ **None Filtering**: Includes `None` in unions for `Optional[A]` patterns  
-- ⚠️ **Complex Union Structures**: Some patterns like `Union[A, List[A]]` fail
 - ⚠️ **Callable Type Inference**: Cannot infer from function signatures yet
-- ⚠️ **Recursive Type Definitions**: Self-referential types not fully supported
+- ⚠️ **ForwardRef Handling**: String-based forward references not fully supported
+- ⚠️ **typing.Any Support**: The `Any` type is not supported
+- ⚠️ **PEP Features**: Literal types (PEP 586), Final annotations (PEP 591), and Annotated types (PEP 593) are not supported
 
 See `test_infer_return_type.py` for tests marked with `@pytest.mark.skip` for detailed examples of current limitations.
 
@@ -328,9 +327,9 @@ uv run pytest -v
 ```
 
 **Test Statistics**:
-- **50 passing tests** covering core functionality
-- **19 skipped tests** documenting current limitations/TODOs  
-- **Total: 69 comprehensive tests** with detailed examples
+- **50+ passing tests** covering core functionality
+- **5 skipped tests** documenting current limitations  
+- **Total: 55+ comprehensive tests** with detailed examples
 
 **Test Categories**:
 - Basic container types (list, dict, tuple, set)
@@ -346,7 +345,7 @@ uv run pytest -v
 infer_return_type/
 ├── infer_return_type.py              # Main implementation (unification algorithm)
 ├── generic_utils.py                  # Generic type utilities (structural extraction)
-├── test_infer_return_type.py         # Main test suite (69 tests: 50 passing, 19 skipped)
+├── test_infer_return_type.py         # Main test suite (55+ tests: 50+ passing, 5 skipped)
 ├── test_generic_utils.py             # Utility tests (55 tests passing)
 ├── test_optimization_pydantic_models.py  # Complex Pydantic model tests
 ├── README.md                         # This file
@@ -373,10 +372,10 @@ infer_return_type/
 We welcome contributions! See `docs/MIGRATION_TO_UNIFICATION_GUIDE.md` for the roadmap to address current limitations.
 
 **Priority fixes needed**:
-1. **Conflicting TypeVar bindings**: Should create unions instead of failing
-2. **None filtering**: Handle `Optional[A]` patterns correctly
-3. **Complex union structures**: Support patterns like `Union[A, List[A]]`
-4. **Callable type inference**: Infer from function signatures
+1. **Callable type inference**: Infer from function signatures
+2. **ForwardRef handling**: Improve string-based forward reference resolution
+3. **typing.Any support**: Add support for the `Any` type
+4. **PEP features**: Add support for Literal, Final, and Annotated types
 
 **Development Guidelines**:
 - Follow the existing code style and patterns
