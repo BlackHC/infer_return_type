@@ -1,15 +1,54 @@
 """
-Unification-based type inference system for generic function return types.
+Unification-Based Type Inference System for Generic Function Return Types.
 
-This implements a formal unification algorithm that can handle:
-1. Complex nested generic structures
-2. TypeVar bounds and constraints
-3. Variance (covariance/contravariance)
-4. Union formation when conflicts arise
-5. Common interface for different generic type systems
+This module implements a sophisticated type inference system that uses formal
+unification algorithms to infer concrete return types for generic functions
+based on runtime arguments. The system treats type inference as a constraint
+satisfaction problem where annotation structures are unified with concrete
+value types.
 
-The key insight is to treat type inference as a constraint satisfaction problem
-where we unify annotation structures with concrete value types.
+Key Features:
+    - Formal unification algorithm with constraint solving
+    - Support for complex nested generic structures
+    - TypeVar bounds and constraints enforcement
+    - Variance awareness (covariant/contravariant/invariant)
+    - Automatic union formation for conflicting types
+    - Unified interface for different generic type systems
+    - Type override support for edge cases
+
+Architecture:
+    The system consists of several key components:
+    
+    1. Constraint Collection: Extracts type constraints from function parameters
+       by matching annotations with runtime values using structural extraction.
+    
+    2. Constraint Solving: Solves the constraint system using unification with
+       variance awareness and union formation capabilities.
+    
+    3. Type Substitution: Applies solved TypeVar bindings to return type
+       annotations to produce concrete types.
+    
+    4. Error Handling: Provides detailed error messages for unification
+       failures and type inference errors.
+
+Algorithm Overview:
+    1. Collect constraints from function parameters by unifying annotations
+       with runtime values
+    2. Solve the constraint system using unification with variance handling
+    3. Apply substitutions to the return type annotation
+    4. Validate bounds and constraints for TypeVars
+    5. Return the concrete return type
+
+Example:
+    >>> from typing import TypeVar, List
+    >>> from infer_return_type import infer_return_type
+    >>> 
+    >>> A = TypeVar('A')
+    >>> def head(items: List[A]) -> A:
+    ...     return items[0]
+    >>> 
+    >>> result_type = infer_return_type(head, [1, 2, 3])
+    >>> print(result_type)  # <class 'int'>
 """
 
 import inspect
@@ -30,15 +69,51 @@ from generic_utils import (
 
 
 class UnificationError(Exception):
-    """Raised when unification fails."""
+    """Raised when type unification fails.
+    
+    This exception is raised when the unification algorithm cannot find
+    a consistent solution for the type constraints. This typically occurs
+    when there are conflicting type requirements that cannot be resolved.
+    
+    Example:
+        >>> # This would raise UnificationError
+        >>> # def f(x: A, y: A) -> A: pass
+        >>> # f(1, "hello")  # int vs str conflict
+    """
 
 
 class TypeInferenceError(Exception):
-    """Raised when type inference fails."""
+    """Raised when type inference fails.
+    
+    This exception is raised when the type inference system cannot
+    determine the concrete return type. This can happen due to:
+    - Unification failures
+    - Unbound TypeVars in the result
+    - Invalid type annotations
+    - Missing type information
+    
+    Example:
+        >>> # This would raise TypeInferenceError
+        >>> # def f() -> A: pass  # A is unbound
+        >>> # infer_return_type(f)
+    """
 
 
 class Variance(Enum):
-    """Type variance for generic parameters."""
+    """Type variance for generic parameters.
+    
+    Variance describes how generic type parameters behave with respect
+    to subtyping relationships. This is crucial for correct type inference
+    in different contexts.
+    
+    Attributes:
+        COVARIANT: The parameter varies in the same direction as subtyping
+                  (e.g., List[A] is covariant in A)
+        CONTRAVARIANT: The parameter varies in the opposite direction
+                       (e.g., Callable[[A], B] is contravariant in A)
+        INVARIANT: The parameter doesn't vary with subtyping
+                   (e.g., Dict[A, B] is invariant in both A and B)
+    """
 
     COVARIANT = "covariant"
     CONTRAVARIANT = "contravariant"
@@ -46,7 +121,23 @@ class Variance(Enum):
 
 
 class Constraint:
-    """Represents a type constraint between a TypeVar and a concrete type."""
+    """Represents a type constraint between a TypeVar and a concrete type.
+    
+    Constraints are the building blocks of the unification system. Each
+    constraint represents a requirement that a TypeVar must satisfy,
+    along with variance information and optional override semantics.
+    
+    Attributes:
+        typevar: The TypeVar being constrained
+        concrete_type: The concrete type (as GenericInfo) that constrains the TypeVar
+        variance: The variance of the constraint (affects how it's resolved)
+        is_override: Whether this constraint overrides others for the same TypeVar
+        
+    Example:
+        >>> A = TypeVar('A')
+        >>> constraint = Constraint(A, GenericInfo(origin=int), Variance.INVARIANT)
+        >>> print(constraint)  # A ~ int (invariant)
+    """
 
     def __init__(
         self,
@@ -55,6 +146,14 @@ class Constraint:
         variance: Variance = Variance.INVARIANT,
         is_override: bool = False,
     ):
+        """Initialize a type constraint.
+        
+        Args:
+            typevar: The TypeVar being constrained
+            concrete_type: The concrete type as GenericInfo
+            variance: The variance of the constraint (default: INVARIANT)
+            is_override: Whether this constraint overrides others (default: False)
+        """
         self.typevar = typevar
         self.concrete_type = concrete_type  # Always GenericInfo
         self.variance = variance
@@ -62,42 +161,98 @@ class Constraint:
 
     @property
     def concrete_type_resolved(self) -> Any:
-        """Get the resolved concrete type."""
+        """Get the resolved concrete type.
+        
+        Returns:
+            The fully materialized concrete type
+        """
         return self.concrete_type.resolved_type
 
     def __str__(self):
+        """String representation of the constraint."""
         override_str = " (override)" if self.is_override else ""
         return f"{self.typevar} ~ {self.concrete_type_resolved} ({self.variance.value}){override_str}"
 
     def __repr__(self):
+        """Repr representation of the constraint."""
         return self.__str__()
 
 
 @dataclass
 class Substitution:
-    """Represents a substitution of TypeVars to concrete types."""
+    """Represents a substitution of TypeVars to concrete types.
+    
+    A substitution maps TypeVars to their concrete types as determined
+    by the unification algorithm. This is the result of solving the
+    constraint system and can be applied to type annotations to
+    produce concrete types.
+    
+    Attributes:
+        bindings: Dictionary mapping TypeVars to their concrete GenericInfo types
+        
+    Example:
+        >>> A, B = TypeVar('A'), TypeVar('B')
+        >>> sub = Substitution()
+        >>> sub.bind(A, GenericInfo(origin=int))
+        >>> sub.bind(B, GenericInfo(origin=str))
+        >>> result = sub.apply(Dict[A, B])
+        >>> print(result)  # dict[int, str]
+    """
 
     bindings: Dict[TypeVar, GenericInfo] = field(
         default_factory=dict
     )  # Always GenericInfo
 
     def bind(self, typevar: TypeVar, concrete_type: GenericInfo):
-        """Bind a TypeVar to a concrete type (GenericInfo)."""
+        """Bind a TypeVar to a concrete type (GenericInfo).
+        
+        Args:
+            typevar: The TypeVar to bind
+            concrete_type: The concrete type as GenericInfo
+        """
         self.bindings[typevar] = concrete_type
 
     def get(self, typevar: TypeVar) -> Optional[GenericInfo]:
-        """Get the binding for a TypeVar."""
+        """Get the binding for a TypeVar.
+        
+        Args:
+            typevar: The TypeVar to look up
+            
+        Returns:
+            The GenericInfo binding, or None if not bound
+        """
         return self.bindings.get(typevar)
 
     def get_resolved(self, typevar: TypeVar) -> Optional[Any]:
-        """Get the resolved binding for a TypeVar."""
+        """Get the resolved binding for a TypeVar.
+        
+        Args:
+            typevar: The TypeVar to look up
+            
+        Returns:
+            The resolved concrete type, or None if not bound
+        """
         binding = self.bindings.get(typevar)
         if binding is None:
             return None
         return binding.resolved_type
 
     def apply(self, annotation: Any) -> Any:
-        """Apply this substitution to an annotation."""
+        """Apply this substitution to an annotation.
+        
+        Args:
+            annotation: The type annotation to substitute
+            
+        Returns:
+            The annotation with TypeVars replaced by their bindings
+            
+        Example:
+            >>> A = TypeVar('A')
+            >>> sub = Substitution()
+            >>> sub.bind(A, GenericInfo(origin=int))
+            >>> result = sub.apply(List[A])
+            >>> print(result)  # list[int]
+        """
         annotation_info = get_generic_info(annotation)
         substituted_info = _substitute_typevars_in_generic_info(
             annotation_info, self.bindings
@@ -108,10 +263,28 @@ class Substitution:
 def unify_annotation_with_value(
     annotation: Any, value: Any, constraints: List[Constraint] = None
 ) -> Substitution:
-    """
-    Unify an annotation with a concrete value to produce TypeVar bindings.
+    """Unify an annotation with a concrete value to produce TypeVar bindings.
 
-    This is the main entry point for type inference.
+    This is the main entry point for type inference. It takes a type
+    annotation and a runtime value, extracts constraints between them,
+    and solves the constraint system to produce TypeVar bindings.
+    
+    Args:
+        annotation: The type annotation to unify
+        value: The runtime value to unify with
+        constraints: Optional list of existing constraints to extend
+        
+    Returns:
+        Substitution mapping TypeVars to their concrete types
+        
+    Raises:
+        UnificationError: If unification fails
+        TypeInferenceError: If type inference fails
+        
+    Example:
+        >>> A = TypeVar('A')
+        >>> sub = unify_annotation_with_value(List[A], [1, 2, 3])
+        >>> print(sub.get_resolved(A))  # <class 'int'>
     """
     if constraints is None:
         constraints = []
@@ -124,8 +297,21 @@ def unify_annotation_with_value(
 
 
 def collect_constraints(annotation: type, value: Any, constraints: List[Constraint]):
-    """Recursively collect type constraints from annotation/value pairs."""
-
+    """Recursively collect type constraints from annotation/value pairs.
+    
+    This function extracts type constraints by analyzing the structural
+    relationship between a type annotation and a runtime value. It
+    delegates to the internal implementation and converts UnificationError
+    to TypeInferenceError for consistency.
+    
+    Args:
+        annotation: The type annotation to analyze
+        value: The runtime value to analyze
+        constraints: List to append extracted constraints to
+        
+    Raises:
+        TypeInferenceError: If constraint collection fails
+    """
     try:
         annotation_info = get_generic_info(annotation)
         _collect_constraints_internal(annotation_info, value, constraints)
@@ -825,16 +1011,48 @@ def _infer_type_from_value(value: Any) -> GenericInfo:
     return GenericInfo(origin=base_type)
 
 
-def infer_return_type_unified(
+def infer_return_type(
     fn: callable,
     *args,
     type_overrides: Optional[Dict[TypeVar, type]] = None,
     **kwargs,
 ) -> type:
-    """
-    Infer the concrete return type using unification algorithm.
+    """Infer the concrete return type using unification algorithm.
 
-    This is the main entry point that replaces the original infer_return_type.
+    This is the main entry point for type inference. It analyzes a function's
+    type annotations and runtime arguments to determine the concrete return
+    type by solving a constraint system using formal unification.
+    
+    The algorithm works by:
+    1. Extracting type constraints from function parameters
+    2. Solving the constraint system using unification
+    3. Applying the solution to the return type annotation
+    4. Validating TypeVar bounds and constraints
+    
+    Args:
+        fn: The function to analyze (must have return type annotation)
+        *args: Positional arguments passed to the function
+        type_overrides: Optional dict mapping TypeVars to concrete types
+        **kwargs: Keyword arguments passed to the function
+        
+    Returns:
+        The concrete return type
+        
+    Raises:
+        ValueError: If function lacks return type annotation
+        TypeInferenceError: If type inference fails
+        
+    Example:
+        >>> from typing import TypeVar, List
+        >>> A = TypeVar('A')
+        >>> def head(items: List[A]) -> A:
+        ...     return items[0]
+        >>> result_type = infer_return_type(head, [1, 2, 3])
+        >>> print(result_type)  # <class 'int'>
+        
+        >>> # With type overrides for empty containers
+        >>> result_type = infer_return_type(head, [], type_overrides={A: int})
+        >>> print(result_type)  # <class 'int'>
     """
 
     if type_overrides is None:

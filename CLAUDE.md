@@ -11,16 +11,16 @@ This is a Python library that implements a sophisticated type inference system f
 ### Testing
 ```bash
 # Run all tests
-uv run pytest test_infer_return_type_unified.py -v
+uv run pytest test_infer_return_type.py -v
 
 # Run only passing tests (skip known limitations)
-uv run pytest test_infer_return_type_unified.py -v -k "not skip"
+uv run pytest test_infer_return_type.py -v -k "not skip"
 
 # Run specific test
-uv run pytest test_infer_return_type_unified.py::test_basic_containers -v
+uv run pytest test_infer_return_type.py::test_basic_containers -v
 
 # Run with coverage
-uv run pytest test_infer_return_type_unified.py --cov=. --cov-report=html
+uv run pytest test_infer_return_type.py --cov=. --cov-report=html
 
 # Run all test files
 uv run pytest -v
@@ -40,7 +40,7 @@ uv sync
 ### Core Components
 
 **1. Unification Engine (`unification_type_inference.py`)**
-- Main entry point: `infer_return_type_unified(fn, *args, type_overrides=None, **kwargs) -> type`
+- Main entry point: `infer_return_type(fn, *args, type_overrides=None, **kwargs) -> type`
 - Core algorithm stages:
   1. **Constraint Collection**: `_collect_constraints()` - Recursively extracts type constraints from function parameters by matching annotations with values
   2. **Constraint Solving**: `_solve_constraints()` - Solves the constraint system using unification with variance awareness
@@ -118,7 +118,7 @@ uv sync
 
 ### Known Limitations
 
-**Documented in skipped tests** (`test_infer_return_type_unified.py`):
+**Documented in skipped tests** (`test_infer_return_type.py`):
 1. ⚠️ **None filtering**: None values are included in unions for Optional[A] instead of being filtered out
 2. ⚠️ **Complex union structures**: Patterns like `Union[A, List[A], Dict[str, A]]` may fail with conflicting type assignments
 3. ⚠️ **Callable type inference**: Cannot extract types from function signatures yet (requires deeper signature inspection)

@@ -1,15 +1,48 @@
 """
-Utilities for extracting type information from generic annotations and instances.
+Generic Type Utilities for Structural Type Information Extraction.
 
-This module provides structural extraction of generic type information, offering
-a consistent interface for working with generic types across different systems
-(built-in generics, Pydantic models, dataclasses).
+This module provides a unified interface for extracting structural type information
+from generic annotations and instances across different type systems. It supports
+built-in generics (list, dict, tuple, set), Pydantic models, dataclasses, and Union types.
 
-Key concepts:
-- concrete_args: The actual type arguments as GenericInfo objects
-- type_params: TypeVars extracted from the concrete arguments
-- origin: The base generic type (e.g., list for list[int])
-- resolved_type: The fully materialized type
+The core abstraction is GenericInfo, which represents generic types in a consistent
+structural format that can be used for type inference, constraint solving, and
+unification algorithms.
+
+Key Concepts:
+    GenericInfo: Structural representation of generic types with:
+        - origin: The base generic type (e.g., list for list[int])
+        - concrete_args: Type arguments as GenericInfo objects
+        - type_params: TypeVars extracted from concrete arguments
+        - resolved_type: The fully materialized type
+    
+    Extractors: Type-system-specific handlers that implement the GenericExtractor
+    interface to extract type information from different generic systems.
+    
+    Annotation-Value Pairs: (GenericInfo, value) tuples used for type inference
+    by mapping type structure to runtime values.
+
+Architecture:
+    The module uses a plugin-based architecture with specialized extractors:
+    - BuiltinExtractor: Handles list, dict, tuple, set types
+    - PydanticExtractor: Handles Pydantic generic models
+    - DataclassExtractor: Handles dataclass generic types
+    - UnionExtractor: Handles Union types (typing.Union and types.UnionType)
+    
+    GenericTypeUtils provides the unified interface that delegates to appropriate
+    extractors based on the type being processed.
+
+Example:
+    >>> from typing import List, TypeVar
+    >>> from generic_utils import get_generic_info, get_annotation_value_pairs
+    >>> 
+    >>> A = TypeVar('A')
+    >>> info = get_generic_info(List[A])
+    >>> print(info.origin)  # <class 'list'>
+    >>> print(len(info.concrete_args))  # 1
+    >>> 
+    >>> pairs = get_annotation_value_pairs(List[A], [1, 2, 3])
+    >>> print(len(pairs))  # 3 (one pair per list element)
 """
 
 import functools
@@ -32,20 +65,53 @@ from abc import ABC, abstractmethod
 
 
 def is_union_type(origin: Any) -> bool:
-    """Check if origin represents a Union type (handles both typing.Union and types.UnionType)."""
+    """Check if origin represents a Union type.
+    
+    Handles both typing.Union and types.UnionType (Python 3.10+).
+    
+    Args:
+        origin: The type origin to check
+        
+    Returns:
+        True if the origin represents a Union type, False otherwise
+        
+    Example:
+        >>> is_union_type(Union)
+        True
+        >>> is_union_type(int)
+        False
+        >>> is_union_type(int | str)  # Python 3.10+
+        True
+    """
     return origin is Union or origin is types.UnionType
 
 
 @dataclass(frozen=True, kw_only=True)
 class GenericInfo:
-    """Container for generic type information extracted from annotations or instances.
-
+    """Structural representation of generic type information.
+    
+    GenericInfo provides a unified structural representation of generic types
+    that abstracts away differences between type systems (built-ins, Pydantic,
+    dataclasses). It contains both the raw structural information and computed
+    derived properties for efficient type inference.
+    
     Attributes:
         origin: The base generic type (e.g., list for list[int])
-        concrete_args: The actual type arguments as GenericInfo objects
+        concrete_args: Type arguments as GenericInfo objects
+        type_params: TypeVars extracted from concrete_args (computed)
+        
+    Properties:
         is_generic: Whether this type has generic information
-        type_params: TypeVars computed from concrete_args (derived field)
-        resolved_type: The fully materialized type (cached property)
+        resolved_type: The fully materialized type (cached)
+        resolved_concrete_args: The materialized concrete arguments
+        
+    Example:
+        >>> from typing import List, TypeVar
+        >>> A = TypeVar('A')
+        >>> info = GenericInfo(origin=list, concrete_args=[GenericInfo(origin=A)])
+        >>> print(info.is_generic)  # True
+        >>> print(info.type_params)  # [A]
+        >>> print(info.resolved_type)  # list[A] (if A is bound)
     """
 
     origin: Any = None
@@ -53,16 +119,53 @@ class GenericInfo:
     type_params: List[TypeVar] = field(init=False)
 
     def __post_init__(self):
-        """Compute derived fields after initialization."""
+        """Compute derived fields after initialization.
+        
+        Automatically computes type_params from concrete_args after the
+        dataclass is initialized. This ensures type_params is always
+        up-to-date with the concrete_args.
+        """
         object.__setattr__(self, "type_params", self._compute_type_params())
 
     @property
     def is_generic(self) -> bool:
-        """Whether this type has generic information (computed from concrete_args)."""
+        """Whether this type has generic information.
+        
+        Returns True if this GenericInfo represents a generic type with
+        type parameters, False otherwise.
+        
+        Returns:
+            True if concrete_args is non-empty, False otherwise
+            
+        Example:
+            >>> GenericInfo(origin=list, concrete_args=[GenericInfo(origin=int)]).is_generic
+            True
+            >>> GenericInfo(origin=int).is_generic
+            False
+        """
         return bool(self.concrete_args)
 
     def _compute_type_params(self) -> List[TypeVar]:
-        """Compute TypeVars from concrete_args and their nested type_params."""
+        """Compute TypeVars from concrete_args and their nested type_params.
+        
+        Recursively extracts all TypeVars from the concrete_args structure.
+        This includes both direct TypeVars and TypeVars nested within
+        other GenericInfo objects.
+        
+        Returns:
+            List of unique TypeVars found in the structure
+            
+        Example:
+            >>> A, B = TypeVar('A'), TypeVar('B')
+            >>> info = GenericInfo(
+            ...     origin=dict,
+            ...     concrete_args=[
+            ...         GenericInfo(origin=A),
+            ...         GenericInfo(origin=list, concrete_args=[GenericInfo(origin=B)])
+            ...     ]
+            ... )
+            >>> info.type_params  # [A, B]
+        """
         seen = set()
         for arg in self.concrete_args:
             if isinstance(arg.origin, TypeVar):
@@ -73,7 +176,26 @@ class GenericInfo:
 
     @functools.cached_property
     def resolved_type(self) -> Any:
-        """The fully materialized type using origin[*resolved_args]."""
+        """The fully materialized type using origin[*resolved_args].
+        
+        Recursively resolves all GenericInfo objects in concrete_args to
+        their actual types and constructs the final type using the origin.
+        
+        Special handling:
+        - Union types: Creates unions using modern syntax (int | str)
+        - Tuple types: Handles both fixed and variable-length tuples
+        - Fallback: Returns origin if subscription fails
+        
+        Returns:
+            The fully materialized type (e.g., list[int], dict[str, int])
+            
+        Example:
+            >>> info = GenericInfo(
+            ...     origin=list,
+            ...     concrete_args=[GenericInfo(origin=int)]
+            ... )
+            >>> info.resolved_type  # list[int]
+        """
         if not self.concrete_args:
             return self.origin
 
@@ -94,12 +216,34 @@ class GenericInfo:
                 return self.origin
 
     def _is_union_origin(self) -> bool:
-        """Check if origin is a Union type."""
+        """Check if origin is a Union type.
+        
+        Returns:
+            True if the origin represents a Union type
+        """
         return is_union_type(self.origin)
 
     @functools.cached_property
     def resolved_concrete_args(self) -> List[Any]:
-        """The fully materialized concrete arguments."""
+        """The fully materialized concrete arguments.
+        
+        Returns a list of resolved types from concrete_args, providing
+        direct access to the materialized type arguments without the
+        GenericInfo wrapper.
+        
+        Returns:
+            List of resolved types, or empty list if no concrete_args
+            
+        Example:
+            >>> info = GenericInfo(
+            ...     origin=dict,
+            ...     concrete_args=[
+            ...         GenericInfo(origin=str),
+            ...         GenericInfo(origin=int)
+            ...     ]
+            ... )
+            >>> info.resolved_concrete_args  # [str, int]
+        """
         return (
             [arg.resolved_type for arg in self.concrete_args]
             if self.concrete_args
@@ -107,13 +251,32 @@ class GenericInfo:
         )
 
     def __eq__(self, other):
-        """Check equality based on origin and resolved_type."""
+        """Check equality based on origin and resolved_type.
+        
+        Two GenericInfo objects are equal if they have the same origin
+        and resolve to the same type. This allows GenericInfo objects
+        to be used in sets and as dictionary keys.
+        
+        Args:
+            other: The object to compare with
+            
+        Returns:
+            True if objects are equal, False otherwise
+        """
         if not isinstance(other, GenericInfo):
             return False
         return self.origin == other.origin and self.resolved_type == other.resolved_type
 
     def __hash__(self):
-        """Make GenericInfo hashable based on origin and resolved_type."""
+        """Make GenericInfo hashable based on origin and resolved_type.
+        
+        Enables GenericInfo objects to be used in sets and as dictionary
+        keys. Falls back to string representation if resolved_type is
+        not hashable.
+        
+        Returns:
+            Hash value for the object
+        """
         try:
             return hash((self.origin, self.resolved_type))
         except TypeError:
@@ -121,40 +284,100 @@ class GenericInfo:
 
 
 class GenericExtractor(ABC):
-    """Abstract base for type-system-specific generic extractors."""
+    """Abstract base class for type-system-specific generic extractors.
+    
+    GenericExtractor defines the interface that all type-system-specific
+    extractors must implement. Each extractor handles a specific type system
+    (built-ins, Pydantic, dataclasses, etc.) and provides methods to:
+    - Check if it can handle a given annotation or instance
+    - Extract GenericInfo from annotations and instances
+    - Generate annotation-value pairs for type inference
+    
+    The plugin-based architecture allows the system to be extended
+    to support new type systems by implementing this interface.
+    """
 
     @abstractmethod
     def can_handle_annotation(self, annotation: Any) -> bool:
-        """Check if this extractor can handle the given annotation."""
+        """Check if this extractor can handle the given annotation.
+        
+        Args:
+            annotation: The type annotation to check
+            
+        Returns:
+            True if this extractor can process the annotation
+        """
 
     @abstractmethod
     def can_handle_instance(self, instance: Any) -> bool:
-        """Check if this extractor can handle the given instance."""
+        """Check if this extractor can handle the given instance.
+        
+        Args:
+            instance: The runtime instance to check
+            
+        Returns:
+            True if this extractor can process the instance
+        """
 
     @abstractmethod
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
-        """Extract generic information from a type annotation."""
+        """Extract generic information from a type annotation.
+        
+        Args:
+            annotation: The type annotation to extract from
+            
+        Returns:
+            GenericInfo representing the structural type information
+        """
 
     @abstractmethod
     def extract_from_instance(self, instance: Any) -> GenericInfo:
-        """Extract generic information from an instance."""
+        """Extract generic information from an instance.
+        
+        Args:
+            instance: The runtime instance to extract from
+            
+        Returns:
+            GenericInfo representing the structural type information
+        """
 
     @abstractmethod
     def get_annotation_value_pairs(
         self, annotation: Any, instance: Any
     ) -> List[Tuple[GenericInfo, Any]]:
         """Extract (GenericInfo, value) pairs for type inference.
-
-        Returns empty list if this extractor doesn't handle the annotation-instance pair.
+        
+        This method is crucial for type inference as it maps type structure
+        to runtime values. For example, for List[A] with [1, 2, 3], it would
+        return [(GenericInfo(origin=A), 1), (GenericInfo(origin=A), 2), (GenericInfo(origin=A), 3)].
+        
+        Args:
+            annotation: The type annotation
+            instance: The runtime instance
+            
+        Returns:
+            List of (GenericInfo, value) pairs, or empty list if this extractor
+            doesn't handle the annotation-instance pair
         """
 
     def _build_typevar_substitution_map(
         self, annotation_info: GenericInfo
     ) -> Dict[TypeVar, GenericInfo]:
         """Build a map from TypeVars to their concrete substitutions.
-
-        Shared helper for extractors that need TypeVar substitution.
-        Only creates mappings when TypeVars are bound to non-TypeVar types.
+        
+        This is a shared helper for extractors that need TypeVar substitution.
+        It maps each TypeVar in the annotation to its corresponding concrete
+        type argument, but only when the concrete type is not the same TypeVar
+        (avoiding identity mappings like A -> A).
+        
+        Args:
+            annotation_info: The GenericInfo representing the annotation
+            
+        Returns:
+            Dictionary mapping TypeVars to their concrete GenericInfo substitutions
+            
+        Example:
+            For Box[A, B] with Box[int, str], returns {A: GenericInfo(origin=int), B: GenericInfo(origin=str)}
         """
         if not annotation_info.concrete_args:
             return {}
@@ -182,8 +405,21 @@ class GenericExtractor(ABC):
         self, generic_info: GenericInfo, typevar_map: Dict[TypeVar, GenericInfo]
     ) -> GenericInfo:
         """Substitute TypeVars in a GenericInfo structure.
-
-        Shared helper for extractors that need TypeVar substitution.
+        
+        This is a shared helper for extractors that need TypeVar substitution.
+        It recursively traverses the GenericInfo structure and replaces TypeVars
+        with their concrete substitutions from the typevar_map.
+        
+        Args:
+            generic_info: The GenericInfo to substitute TypeVars in
+            typevar_map: Dictionary mapping TypeVars to their substitutions
+            
+        Returns:
+            New GenericInfo with TypeVars substituted
+            
+        Example:
+            GenericInfo(origin=list, concrete_args=[GenericInfo(origin=A)]) with
+            {A: GenericInfo(origin=int)} becomes GenericInfo(origin=list, concrete_args=[GenericInfo(origin=int)])
         """
         # If this is a TypeVar, substitute it
         if (
@@ -208,13 +444,33 @@ class GenericExtractor(ABC):
     @abstractmethod
     def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
         """Get the original TypeVar parameters from a class definition.
-
-        Implemented by subclasses based on their specific metadata mechanisms.
+        
+        Different type systems store TypeVar parameters in different ways:
+        - Dataclasses: In __orig_bases__ from Generic[...] inheritance
+        - Pydantic: In __orig_bases__ from Generic[...] inheritance
+        - Built-ins: Don't have TypeVar parameters
+        
+        Args:
+            dataclass_class: The class to extract TypeVars from
+            
+        Returns:
+            List of TypeVars defined in the class
         """
 
 
 class BuiltinExtractor(GenericExtractor):
-    """Extractor for built-in generic types like list, dict, tuple, set."""
+    """Extractor for built-in generic types.
+    
+    Handles Python's built-in generic types: list, dict, tuple, set and their
+    typing module equivalents (List, Dict, Tuple, Set). These types use
+    standard Python generics with __origin__ and __args__ attributes.
+    
+    Supported types:
+        - list, List: Single type parameter for element type
+        - dict, Dict: Two type parameters for key and value types
+        - tuple, Tuple: Variable number of type parameters
+        - set, Set: Single type parameter for element type
+    """
 
     _BUILTIN_ORIGINS = frozenset(
         {
@@ -230,18 +486,58 @@ class BuiltinExtractor(GenericExtractor):
     )
 
     def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
-        """Built-in types don't have TypeVar parameters in their definitions."""
+        """Built-in types don't have TypeVar parameters in their definitions.
+        
+        Built-in types like list, dict, tuple, set are not generic classes
+        with TypeVar parameters. They are concrete types that can be
+        parameterized with type arguments, but don't define their own TypeVars.
+        
+        Args:
+            dataclass_class: Ignored for built-in types
+            
+        Returns:
+            Empty list (built-ins have no TypeVar parameters)
+        """
         return []
 
     def can_handle_annotation(self, annotation: Any) -> bool:
+        """Check if this extractor can handle the given annotation.
+        
+        Args:
+            annotation: The type annotation to check
+            
+        Returns:
+            True if the annotation's origin is a built-in generic type
+        """
         origin = get_origin(annotation)
         return origin in self._BUILTIN_ORIGINS
 
     def can_handle_instance(self, instance: Any) -> bool:
+        """Check if this extractor can handle the given instance.
+        
+        Args:
+            instance: The runtime instance to check
+            
+        Returns:
+            True if the instance is a built-in container type
+        """
         return isinstance(instance, (list, dict, tuple, set))
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
-        """Extract generic information from a built-in type annotation."""
+        """Extract generic information from a built-in type annotation.
+        
+        Args:
+            annotation: The built-in type annotation (e.g., list[int])
+            
+        Returns:
+            GenericInfo with origin and concrete_args extracted
+            
+        Example:
+            >>> extractor = BuiltinExtractor()
+            >>> info = extractor.extract_from_annotation(list[int])
+            >>> info.origin  # <class 'list'>
+            >>> info.concrete_args[0].origin  # <class 'int'>
+        """
         origin = get_origin(annotation)
         args = get_args(annotation)
 
@@ -250,13 +546,49 @@ class BuiltinExtractor(GenericExtractor):
         return GenericInfo(origin=origin, concrete_args=concrete_args)
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
-        """Extract generic information from a built-in type instance."""
+        """Extract generic information from a built-in type instance.
+        
+        For built-in types, we can only extract the runtime type, not
+        the generic parameters, since Python doesn't preserve generic
+        type information at runtime for built-in types.
+        
+        Args:
+            instance: The runtime instance
+            
+        Returns:
+            GenericInfo with origin set to the instance's type
+            
+        Example:
+            >>> extractor = BuiltinExtractor()
+            >>> info = extractor.extract_from_instance([1, 2, 3])
+            >>> info.origin  # <class 'list'>
+            >>> info.concrete_args  # [] (no generic info preserved)
+        """
         return GenericInfo(origin=type(instance))
 
     def get_annotation_value_pairs(
         self, annotation: Any, instance: Any
     ) -> List[Tuple[GenericInfo, Any]]:
-        """Extract (GenericInfo, value) pairs from built-in containers."""
+        """Extract (GenericInfo, value) pairs from built-in containers.
+        
+        Maps each element in the container to its corresponding type parameter.
+        For example, list[A] with [1, 2, 3] produces three pairs mapping
+        each integer to the GenericInfo representing type parameter A.
+        
+        Args:
+            annotation: The container type annotation
+            instance: The runtime container instance
+            
+        Returns:
+            List of (GenericInfo, value) pairs for type inference
+            
+        Example:
+            >>> extractor = BuiltinExtractor()
+            >>> pairs = extractor.get_annotation_value_pairs(list[A], [1, 2, 3])
+            >>> len(pairs)  # 3
+            >>> pairs[0][1]  # 1 (the value)
+            >>> pairs[0][0].origin  # A (the TypeVar)
+        """
         if instance is None:
             return []
 
@@ -312,16 +644,62 @@ class BuiltinExtractor(GenericExtractor):
 
 
 class PydanticExtractor(GenericExtractor):
-    """Extractor for Pydantic generic models."""
+    """Extractor for Pydantic generic models.
+    
+    Handles Pydantic's generic model system which uses __pydantic_generic_metadata__
+    to store generic type information. Pydantic models can be parameterized with
+    type arguments and preserve this information through the metadata system.
+    
+    Features:
+        - Extracts generic info from both parameterized and unparameterized models
+        - Handles TypeVar substitution for field annotations
+        - Supports inheritance with generic base classes
+        - Uses Pydantic's specialized field annotations
+    """
 
     def can_handle_annotation(self, annotation: Any) -> bool:
+        """Check if this extractor can handle the given annotation.
+        
+        Args:
+            annotation: The type annotation to check
+            
+        Returns:
+            True if the annotation has Pydantic generic metadata
+        """
         return hasattr(annotation, "__pydantic_generic_metadata__")
 
     def can_handle_instance(self, instance: Any) -> bool:
+        """Check if this extractor can handle the given instance.
+        
+        Args:
+            instance: The runtime instance to check
+            
+        Returns:
+            True if the instance has Pydantic generic metadata
+        """
         return hasattr(instance, "__pydantic_generic_metadata__")
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
-        """Extract generic information from a Pydantic type annotation."""
+        """Extract generic information from a Pydantic type annotation.
+        
+        Handles both parameterized models (e.g., Box[int]) and unparameterized
+        base classes (e.g., Box). For unparameterized classes, extracts
+        TypeVars from the class definition.
+        
+        Args:
+            annotation: The Pydantic model annotation
+            
+        Returns:
+            GenericInfo representing the structural type information
+            
+        Example:
+            >>> class Box(BaseModel, Generic[A]):
+            ...     item: A
+            >>> extractor = PydanticExtractor()
+            >>> info = extractor.extract_from_annotation(Box[int])
+            >>> info.origin  # Box
+            >>> info.concrete_args[0].origin  # int
+        """
         if not hasattr(annotation, "__pydantic_generic_metadata__"):
             return GenericInfo()
 
@@ -343,7 +721,21 @@ class PydanticExtractor(GenericExtractor):
         return GenericInfo(origin=origin, concrete_args=concrete_args)
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
-        """Extract generic information from a Pydantic model instance."""
+        """Extract generic information from a Pydantic model instance.
+        
+        Args:
+            instance: The Pydantic model instance
+            
+        Returns:
+            GenericInfo representing the structural type information
+            
+        Example:
+            >>> box = Box[int](item=42)
+            >>> extractor = PydanticExtractor()
+            >>> info = extractor.extract_from_instance(box)
+            >>> info.origin  # Box
+            >>> info.concrete_args[0].origin  # int
+        """
         if not hasattr(instance, "__pydantic_generic_metadata__"):
             return GenericInfo()
 
@@ -363,7 +755,16 @@ class PydanticExtractor(GenericExtractor):
         return GenericInfo(origin=origin, concrete_args=concrete_args)
 
     def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
-        """Get the original TypeVar parameters from a class definition."""
+        """Get the original TypeVar parameters from a Pydantic class definition.
+        
+        Extracts TypeVars from __orig_bases__ by looking for Generic[...] inheritance.
+        
+        Args:
+            dataclass_class: The Pydantic model class
+            
+        Returns:
+            List of TypeVars defined in the class
+        """
         for base in getattr(dataclass_class, "__orig_bases__", []):
             if hasattr(base, "__origin__") and hasattr(base, "__args__"):
                 origin = get_origin(base)
@@ -376,12 +777,28 @@ class PydanticExtractor(GenericExtractor):
         self, annotation: Any, instance: Any
     ) -> List[Tuple[GenericInfo, Any]]:
         """Extract (GenericInfo, value) pairs from Pydantic model fields.
-
+        
         Pydantic specializes field annotations in parameterized classes, so we can
         use annotation's fields directly without manual substitution:
-        - Level3[A] → fields have TypeVar A
-        - Level3[bool] → fields have bool
-        - Level3[List[B]] → fields have List[B]
+        - Box[A] → fields have TypeVar A
+        - Box[bool] → fields have bool
+        - Box[List[B]] → fields have List[B]
+        
+        Args:
+            annotation: The Pydantic model annotation
+            instance: The Pydantic model instance
+            
+        Returns:
+            List of (GenericInfo, value) pairs for type inference
+            
+        Example:
+            >>> class Box(BaseModel, Generic[A]):
+            ...     item: A
+            >>> box = Box[int](item=42)
+            >>> pairs = extractor.get_annotation_value_pairs(Box[A], box)
+            >>> len(pairs)  # 1
+            >>> pairs[0][0].origin  # A (the TypeVar)
+            >>> pairs[0][1]  # 42 (the value)
         """
         if instance is None or not hasattr(instance, "__pydantic_fields__"):
             return []
@@ -401,21 +818,72 @@ class PydanticExtractor(GenericExtractor):
 
 
 class UnionExtractor(GenericExtractor):
-    """Extractor for Union types (both typing.Union and types.UnionType)."""
+    """Extractor for Union types (both typing.Union and types.UnionType).
+    
+    Handles Union types which represent alternative types. Union types don't
+    have instances directly, but are used in annotations to specify that
+    a value can be one of several types.
+    
+    Features:
+        - Supports both typing.Union and types.UnionType (Python 3.10+)
+        - Extracts union alternatives as concrete_args
+        - No direct instance handling (unions are type-level constructs)
+    """
 
     def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
-        """Union types don't have TypeVar parameters in their definitions."""
+        """Union types don't have TypeVar parameters in their definitions.
+        
+        Union types are not generic classes with TypeVar parameters.
+        They are type-level constructs that combine multiple types.
+        
+        Args:
+            dataclass_class: Ignored for Union types
+            
+        Returns:
+            Empty list (Union types have no TypeVar parameters)
+        """
         return []
 
     def can_handle_annotation(self, annotation: Any) -> bool:
+        """Check if this extractor can handle the given annotation.
+        
+        Args:
+            annotation: The type annotation to check
+            
+        Returns:
+            True if the annotation is a Union type
+        """
         origin = get_origin(annotation)
         return origin is Union or origin is types.UnionType
 
     def can_handle_instance(self, instance: Any) -> bool:
+        """Check if this extractor can handle the given instance.
+        
+        Args:
+            instance: The runtime instance to check
+            
+        Returns:
+            False (instances don't have Union types directly)
+        """
         return False  # Instances don't have Union types directly
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
-        """Extract Union type information."""
+        """Extract Union type information.
+        
+        Args:
+            annotation: The Union type annotation
+            
+        Returns:
+            GenericInfo with Union origin and alternatives as concrete_args
+            
+        Example:
+            >>> extractor = UnionExtractor()
+            >>> info = extractor.extract_from_annotation(int | str)
+            >>> info.origin  # Union or types.UnionType
+            >>> len(info.concrete_args)  # 2
+            >>> info.concrete_args[0].origin  # int
+            >>> info.concrete_args[1].origin  # str
+        """
         origin = get_origin(annotation)
         args = get_args(annotation)
 
@@ -424,7 +892,14 @@ class UnionExtractor(GenericExtractor):
         return GenericInfo(origin=origin, concrete_args=concrete_args)
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
-        """Union types don't have instances directly."""
+        """Union types don't have instances directly.
+        
+        Args:
+            instance: The runtime instance
+            
+        Returns:
+            GenericInfo with the instance's type as origin
+        """
         return GenericInfo(origin=type(instance))
 
     def get_annotation_value_pairs(
@@ -435,22 +910,72 @@ class UnionExtractor(GenericExtractor):
         Matching an instance to a Union alternative requires type-checking logic
         that belongs in the unification engine, not in structural extraction.
         The unification engine handles this via _handle_union_constraints.
+        
+        Args:
+            annotation: The Union type annotation
+            instance: The runtime instance
+            
+        Returns:
+            Empty list (Union matching handled by unification engine)
         """
         return []
 
 
 class DataclassExtractor(GenericExtractor):
-    """Extractor for dataclass generic types."""
+    """Extractor for dataclass generic types.
+    
+    Handles dataclass-based generic types that inherit from typing.Generic.
+    These classes use __orig_bases__ to store generic type information and
+    __orig_class__ on instances to preserve concrete type arguments.
+    
+    Features:
+        - Extracts generic info from dataclass annotations and instances
+        - Handles TypeVar substitution for field annotations
+        - Supports inheritance with swapped TypeVars (e.g., HasB(HasA[B, A]))
+        - Uses dataclass fields() for field extraction
+    """
 
     def can_handle_annotation(self, annotation: Any) -> bool:
+        """Check if this extractor can handle the given annotation.
+        
+        Args:
+            annotation: The type annotation to check
+            
+        Returns:
+            True if the annotation is a dataclass with generic bases
+        """
         origin = get_origin(annotation) or annotation
         return is_dataclass(origin) and hasattr(origin, "__orig_bases__")
 
     def can_handle_instance(self, instance: Any) -> bool:
+        """Check if this extractor can handle the given instance.
+        
+        Args:
+            instance: The runtime instance to check
+            
+        Returns:
+            True if the instance is a dataclass
+        """
         return is_dataclass(instance)
 
     def extract_from_annotation(self, annotation: Any) -> GenericInfo:
-        """Extract generic information from a dataclass type annotation."""
+        """Extract generic information from a dataclass type annotation.
+        
+        Args:
+            annotation: The dataclass type annotation
+            
+        Returns:
+            GenericInfo representing the structural type information
+            
+        Example:
+            >>> @dataclass
+            ... class Box(Generic[A]):
+            ...     item: A
+            >>> extractor = DataclassExtractor()
+            >>> info = extractor.extract_from_annotation(Box[int])
+            >>> info.origin  # Box
+            >>> info.concrete_args[0].origin  # int
+        """
         origin = get_origin(annotation) or annotation
         args = get_args(annotation)
 
@@ -462,7 +987,21 @@ class DataclassExtractor(GenericExtractor):
         return GenericInfo(origin=origin, concrete_args=concrete_args)
 
     def extract_from_instance(self, instance: Any) -> GenericInfo:
-        """Extract generic information from a dataclass instance."""
+        """Extract generic information from a dataclass instance.
+        
+        Args:
+            instance: The dataclass instance
+            
+        Returns:
+            GenericInfo representing the structural type information
+            
+        Example:
+            >>> box = Box[int](item=42)
+            >>> extractor = DataclassExtractor()
+            >>> info = extractor.extract_from_instance(box)
+            >>> info.origin  # Box
+            >>> info.concrete_args[0].origin  # int (if __orig_class__ exists)
+        """
         if not is_dataclass(instance):
             return GenericInfo()
 
@@ -479,7 +1018,16 @@ class DataclassExtractor(GenericExtractor):
         return GenericInfo(origin=origin, concrete_args=concrete_args)
 
     def _get_original_type_parameters(self, dataclass_class: Any) -> List[TypeVar]:
-        """Get the original TypeVar parameters from a class definition."""
+        """Get the original TypeVar parameters from a dataclass class definition.
+        
+        Extracts TypeVars from __orig_bases__ by looking for Generic[...] inheritance.
+        
+        Args:
+            dataclass_class: The dataclass class
+            
+        Returns:
+            List of TypeVars defined in the class
+        """
         for base in getattr(dataclass_class, "__orig_bases__", []):
             if hasattr(base, "__origin__") and hasattr(base, "__args__"):
                 origin = get_origin(base)
@@ -582,9 +1130,6 @@ class DataclassExtractor(GenericExtractor):
 
         # Check if we need inheritance substitution (annotation class != instance class)
         annotation_class = annotation_info.origin
-        instance_class_origin = get_origin(
-            getattr(instance, "__orig_class__", type(instance))
-        ) or type(instance)
 
         # Build TypeVar substitution map
         # Check if this class has parent classes with generic parameters
@@ -619,7 +1164,7 @@ class DataclassExtractor(GenericExtractor):
             field_hints = get_type_hints(
                 annotation_info.origin, globalns=globalns, localns=localns
             )
-        except Exception:
+        except (TypeError, NameError, AttributeError):
             # Fallback to raw field types if get_type_hints fails
             field_hints = {}
 
@@ -650,9 +1195,23 @@ class DataclassExtractor(GenericExtractor):
 
 
 class GenericTypeUtils:
-    """Unified interface for extracting generic type information."""
+    """Unified interface for extracting generic type information.
+    
+    GenericTypeUtils provides a single entry point for extracting structural
+    type information from different generic type systems. It delegates to
+    specialized extractors based on the type being processed.
+    
+    The class maintains a registry of extractors and provides methods to:
+    - Extract GenericInfo from annotations and instances
+    - Generate annotation-value pairs for type inference
+    - Handle TypeVars and Union types
+    
+    Extractors are tried in order: BuiltinExtractor, PydanticExtractor,
+    DataclassExtractor, UnionExtractor.
+    """
 
     def __init__(self):
+        """Initialize the utility with specialized extractors."""
         self.extractors = [
             BuiltinExtractor(),
             PydanticExtractor(),
@@ -661,7 +1220,20 @@ class GenericTypeUtils:
         ]
 
     def get_generic_info(self, annotation: Any) -> GenericInfo:
-        """Extract generic type information from an annotation."""
+        """Extract generic type information from an annotation.
+        
+        Args:
+            annotation: The type annotation to extract from
+            
+        Returns:
+            GenericInfo representing the structural type information
+            
+        Example:
+            >>> utils = GenericTypeUtils()
+            >>> info = utils.get_generic_info(list[int])
+            >>> info.origin  # <class 'list'>
+            >>> info.concrete_args[0].origin  # <class 'int'>
+        """
         if isinstance(annotation, TypeVar):
             return GenericInfo(origin=annotation)
 
@@ -673,7 +1245,19 @@ class GenericTypeUtils:
         return GenericInfo(origin=annotation)
 
     def get_instance_generic_info(self, instance: Any) -> GenericInfo:
-        """Extract generic type information from an instance."""
+        """Extract generic type information from an instance.
+        
+        Args:
+            instance: The runtime instance to extract from
+            
+        Returns:
+            GenericInfo representing the structural type information
+            
+        Example:
+            >>> utils = GenericTypeUtils()
+            >>> info = utils.get_instance_generic_info([1, 2, 3])
+            >>> info.origin  # <class 'list'>
+        """
         for extractor in self.extractors:
             if extractor.can_handle_instance(instance):
                 return extractor.extract_from_instance(instance)
@@ -730,6 +1314,19 @@ def create_union_if_needed(types_set: set) -> Any:
     """Create a Union type if needed, or return single type.
 
     Uses modern union syntax (int | str) for Python 3.10+ compatibility.
+    Falls back to typing.Union for edge cases where the | operator doesn't work.
+    
+    Args:
+        types_set: Set of types to union together
+        
+    Returns:
+        Single type if only one type, Union type if multiple types
+        
+    Example:
+        >>> create_union_if_needed({int})
+        <class 'int'>
+        >>> create_union_if_needed({int, str})
+        int | str
     """
     if len(types_set) == 1:
         return list(types_set)[0]
@@ -753,6 +1350,21 @@ def create_generic_info_union_if_needed(
     """Create a GenericInfo Union type if needed, or return single GenericInfo.
 
     Works entirely within GenericInfo objects without resolving to actual types.
+    This is useful for type inference where we want to maintain the structural
+    representation without materializing the final type.
+    
+    Args:
+        generic_info_set: Set of GenericInfo objects to union together
+        
+    Returns:
+        Single GenericInfo if only one, Union GenericInfo if multiple
+        
+    Example:
+        >>> info1 = GenericInfo(origin=int)
+        >>> info2 = GenericInfo(origin=str)
+        >>> union_info = create_generic_info_union_if_needed({info1, info2})
+        >>> union_info.origin  # Union
+        >>> len(union_info.concrete_args)  # 2
     """
     if len(generic_info_set) == 1:
         return list(generic_info_set)[0]
@@ -770,17 +1382,60 @@ generic_utils = GenericTypeUtils()
 
 # Convenience functions that mirror the class methods
 def get_generic_info(annotation: Any) -> GenericInfo:
-    """Extract generic type information from an annotation."""
+    """Extract generic type information from an annotation.
+    
+    Convenience function that delegates to the global GenericTypeUtils instance.
+    
+    Args:
+        annotation: The type annotation to extract from
+        
+    Returns:
+        GenericInfo representing the structural type information
+        
+    Example:
+        >>> info = get_generic_info(list[int])
+        >>> info.origin  # <class 'list'>
+        >>> info.concrete_args[0].origin  # <class 'int'>
+    """
     return generic_utils.get_generic_info(annotation)
 
 
 def get_instance_generic_info(instance: Any) -> GenericInfo:
-    """Extract generic type information from an instance."""
+    """Extract generic type information from an instance.
+    
+    Convenience function that delegates to the global GenericTypeUtils instance.
+    
+    Args:
+        instance: The runtime instance to extract from
+        
+    Returns:
+        GenericInfo representing the structural type information
+        
+    Example:
+        >>> info = get_instance_generic_info([1, 2, 3])
+        >>> info.origin  # <class 'list'>
+    """
     return generic_utils.get_instance_generic_info(instance)
 
 
 def get_annotation_value_pairs(
     annotation: Any, instance: Any
 ) -> List[Tuple["GenericInfo", Any]]:
-    """Extract (GenericInfo, value) pairs for type inference."""
+    """Extract (GenericInfo, value) pairs for type inference.
+    
+    Convenience function that delegates to the global GenericTypeUtils instance.
+    
+    Args:
+        annotation: The type annotation
+        instance: The runtime instance
+        
+    Returns:
+        List of (GenericInfo, value) pairs for type inference
+        
+    Example:
+        >>> pairs = get_annotation_value_pairs(list[A], [1, 2, 3])
+        >>> len(pairs)  # 3
+        >>> pairs[0][0].origin  # A (the TypeVar)
+        >>> pairs[0][1]  # 1 (the value)
+    """
     return generic_utils.get_annotation_value_pairs(annotation, instance)

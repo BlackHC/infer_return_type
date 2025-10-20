@@ -25,7 +25,7 @@ from infer_return_type import (
     _has_unbound_typevars_in_generic_info,
     _infer_type_from_value,
     _is_subtype,
-    infer_return_type_unified as infer_return_type,
+    infer_return_type as infer_return_type,
     unify_annotation_with_value,
     solve_constraints,
     _union_components_match,
