@@ -889,21 +889,3 @@ def _has_unbound_typevars_in_generic_info(generic_info: GenericInfo) -> bool:
             return True
     
     return False
-
-
-def _has_unbound_typevars(annotation: Any) -> bool:
-    """Check if an annotation contains any unbound TypeVars."""
-    if isinstance(annotation, TypeVar):
-        return True
-    
-    # Use generic_utils for consistent handling
-    type_info = get_generic_info(annotation)
-    
-    if type_info.concrete_args:
-        # Recursively check each type argument
-        for arg_info in type_info.concrete_args:
-            if _has_unbound_typevars_in_generic_info(arg_info):
-                return True
-        return False
-    
-    return False
