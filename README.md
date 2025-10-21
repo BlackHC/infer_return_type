@@ -49,16 +49,44 @@ assert result_type is str
 
 ## Installation
 
+### From PyPI (Recommended)
+
 ```bash
 # Using uv (recommended)
-uv pip install -e .
+uv pip install infer-return-type
 
 # Or using pip
-pip install -e .
+pip install infer-return-type
+```
 
-# For development
-git clone <repository-url>
-cd infer_return_type
+### Quick Test
+
+Test the package directly from PyPI using uv:
+
+```bash
+# Self-contained test command
+cd /tmp && uv run --python 3.11 --with infer-return-type python -c "
+from infer_return_type import infer_return_type
+from typing import TypeVar, List
+
+A = TypeVar('A')
+def head(items: List[A]) -> A:
+    return items[0]
+
+result = infer_return_type(head, [1, 2, 3])
+print(f'✓ Package works: {result}')
+"
+```
+
+### Development Installation
+
+```bash
+# Clone and install in development mode
+git clone https://github.com/blackhc/infer-return-type
+cd infer-return-type
+uv pip install -e .
+
+# Install development dependencies
 uv sync  # Install dependencies
 ```
 
