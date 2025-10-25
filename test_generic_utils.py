@@ -19,6 +19,8 @@ from infer_return_type.generic_utils import (
     BuiltinExtractor,
     DataclassExtractor,
     GenericTypeUtils,
+    GenericInfo,
+    get_generic_info,
     PydanticExtractor,
     UnionExtractor,
     create_union_if_needed,
@@ -1086,8 +1088,6 @@ class TestGenericInfoEdgeCases:
 
     def test_generic_info_equality_with_non_generic_info(self):
         """Test GenericInfo.__eq__ returns False for non-GenericInfo objects."""
-        from generic_utils import GenericInfo
-
         info = GenericInfo(origin=int)
         assert info != "not a GenericInfo"
         assert info != 42
@@ -1095,8 +1095,6 @@ class TestGenericInfoEdgeCases:
 
     def test_generic_info_hash_with_unhashable_type(self):
         """Test GenericInfo.__hash__ handles unhashable resolved_type."""
-        from generic_utils import GenericInfo
-
         # Create a GenericInfo with a type that might cause issues in hash
         # The __hash__ method has a try/except for TypeError
         info = GenericInfo(origin=list, concrete_args=[GenericInfo(origin=dict)])
@@ -1127,8 +1125,6 @@ class TestExtractorEdgeCases:
     @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
     def test_pydantic_extractor_unparameterized_base(self):
         """Test PydanticExtractor with unparameterized base classes."""
-        from generic_utils import GenericInfo
-
         A = TypeVar("A")
 
         class UnparameterizedBox(BaseModel, typing.Generic[A]):
@@ -1200,8 +1196,6 @@ class TestGetAnnotationValuePairsEdgeCases:
         instance = CustomClass(42)
 
         # Get annotation info
-        from generic_utils import get_generic_info
-
         ann_info = get_generic_info(CustomClass[A])
 
         # Test that we can extract from custom objects with __dict__

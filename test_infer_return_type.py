@@ -10,13 +10,19 @@ from typing import (
     Tuple,
     TypeVar,
     Union,
+    ForwardRef,
+    Final,
+    Annotated,
+    Any,
+    NoReturn,
 )
+import time
 
 from pydantic import BaseModel
 import pytest
 
 from infer_return_type import infer_return_type, TypeInferenceError
-from infer_return_type.generic_utils import get_generic_info
+from infer_return_type.generic_utils import get_generic_info, get_instance_generic_info
 from infer_return_type.infer_return_type import (
     Constraint,
     Substitution,
@@ -30,6 +36,7 @@ from infer_return_type.infer_return_type import (
     _union_components_match,
     _match_generic_structures,
     _origins_compatible,
+    _infer_type_from_value,
 )
 
 # TypeVars for testing
@@ -1325,8 +1332,6 @@ def test_substitution_and_type_reconstruction():
 
 def test_additional_edge_cases():
     """Test additional edge cases to improve coverage."""
-    from generic_utils import get_generic_info
-
     # Test constraint solver with many constraints
     constraints = [
         Constraint(A, get_generic_info(int), Variance.COVARIANT) for _ in range(10)
@@ -1368,8 +1373,6 @@ def test_additional_edge_cases():
     assert set(union_args) == {int, str, float}
 
     # Test union components matching
-    from generic_utils import get_generic_info
-
     # Create unions: int | list[int] vs int | list
     union1_info = get_generic_info(int | list[int])
     union2_info = get_generic_info(int | list)
@@ -1388,7 +1391,6 @@ def test_additional_edge_cases():
     # Test generic info matching with different origins
     list_info = get_generic_info(List[A])
     set_val = {1, 2, 3}
-    from generic_utils import get_instance_generic_info
 
     set_info = get_instance_generic_info(set_val)
 
@@ -1431,8 +1433,6 @@ def test_additional_edge_cases():
     assert t == int
 
     # Test NoneType inference (now returns GenericInfo)
-    from infer_return_type import _infer_type_from_value
-
     t = _infer_type_from_value(None)
     assert t.resolved_type == type(None)
 
@@ -1457,8 +1457,6 @@ def test_additional_edge_cases():
     assert typing.get_origin(t.resolved_type) is tuple
 
     # Test _is_subtype edge cases
-    from infer_return_type import _is_subtype
-
     assert _is_subtype(bool, int)
     assert _is_subtype(int, object)
     assert not _is_subtype(int, str)
@@ -2143,9 +2141,6 @@ def test_additional_edge_cases():
     result = sub.get(A)
     assert result.resolved_type == int
 
-    # Test ForwardRef handling edge cases
-    from typing import ForwardRef
-
     # Test ForwardRef with matching class name
 
     def test_forward_ref_match(obj: ForwardRef("SimpleClass")) -> int: ...
@@ -2239,8 +2234,6 @@ def test_additional_edge_cases():
 def test_any_type_limitations():
     """Document typing.Any limitations."""
 
-    from typing import Any
-
     def process_any(x: Any, y: A) -> A: ...
 
     # Any should accept anything, but shouldn't interfere with A inference
@@ -2256,8 +2249,6 @@ def test_any_type_limitations():
 @pytest.mark.skip(reason="BENCHMARK: Performance test, not a correctness test")
 def test_deeply_nested_performance():
     """Benchmark: Test performance on deeply nested structures."""
-
-    import time
 
     def deep_nested(data: List[List[List[List[List[A]]]]]) -> A: ...
 
@@ -2281,8 +2272,6 @@ def test_many_typevars_scalability():
         a=1, b="hello", c=3.14, x=True, y=b"data"
     )
 
-    import time
-
     start = time.time()
     result = infer_return_type(extract_all, instance)
     elapsed = time.time() - start
@@ -2298,7 +2287,6 @@ def test_many_typevars_scalability():
 @pytest.mark.skip(reason="LIMITATION: Literal types (PEP 586) not supported")
 def test_literal_types():
     """Test with Literal types from PEP 586."""
-    from typing import Literal
 
     def process_literal(x: Literal[1, 2, 3], y: A) -> A: ...
 
@@ -2310,7 +2298,6 @@ def test_literal_types():
 @pytest.mark.skip(reason="LIMITATION: Final annotations (PEP 591) not supported")
 def test_final_annotation():
     """Test with Final annotation from PEP 591."""
-    from typing import Final
 
     def process_final(x: Final[A]) -> A: ...
 
@@ -2323,7 +2310,6 @@ def test_final_annotation():
 def test_annotated_type():
     """Test with Annotated type from PEP 593."""
     try:
-        from typing import Annotated
 
         def process_annotated(x: Annotated[A, "some metadata"]) -> A: ...
 
@@ -2337,7 +2323,6 @@ def test_annotated_type():
 
 def test_pep484_noreturn():
     """Test that NoReturn is handled appropriately."""
-    from typing import NoReturn
 
     def process_noreturn(x: NoReturn, y: A) -> A: ...
 
